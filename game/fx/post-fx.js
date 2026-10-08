@@ -67,7 +67,8 @@ const CinematicShader = {
 };
 
 /**
- * Wraps the EffectComposer. `quality` is 'high' | 'low' | 'off'. In 'off' mode
+ * Wraps the EffectComposer. `quality` is 'high' | 'low' | 'mobile' | 'off'
+ * ('mobile' = no MSAA and no bloom, for phones/tablets). In 'off' mode
  * render() falls through to the plain renderer so the game still runs on
  * machines where post-processing is too slow.
  */
@@ -97,6 +98,7 @@ export class PostFx {
     // Threshold sits above sunlit surfaces (the scene is HDR: sun 4.0 + hemisphere 2.15) so only the sun, lasers, fire, plasma
     // and other emissive effects glow.
     this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), quality === 'high' ? .4 : .3, .6, 1.7);
+    this.bloom.enabled = quality !== 'mobile';
     this.composer.addPass(this.bloom);
     this.grade = new ShaderPass(CinematicShader);
     this.composer.addPass(this.grade);
@@ -132,7 +134,7 @@ export class PostFx {
   }
 }
 
-export function postFxQualityFromUrl(search) {
+export function postFxQualityFromUrl(search, fallback = 'high') {
   const value = new URLSearchParams(search).get('fx');
-  return value === 'off' || value === 'low' ? value : 'high';
+  return ['off', 'low', 'mobile', 'high'].includes(value) ? value : fallback;
 }

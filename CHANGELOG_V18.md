@@ -19,3 +19,9 @@
 - Sombra do sol: frustum menor (±170 m), re-renderizada a ~40 Hz, e postes, semáforos, plantas e props pequenos não projetam sombra.
 - Resolução dinâmica (`game/fx/adaptive-quality.js`): reduz o pixel ratio quando o frame passa de ~19 ms e sobe devagar quando sobra folga; se chegar ao piso, desliga o bloom e depois reduz a taxa das sombras. `?adaptive=off` desliga.
 - Medido em cena de rua no centro: triângulos ~1,0 M → ~0,56 M, draw calls 974 → ~810 (altitude: 0,73 M → 0,30 M tris).
+
+## Mobile
+- Detecção automática (`pointer: coarse` / UA; `?touch=1` e `?touch=0` forçam) em `game/ui/device.js`.
+- Controles de toque (`game/ui/touch-controls.js`): joystick flutuante à esquerda (WASD 8 direções), arrastar à direita para mirar câmera/voo e botões VOAR, SOCO, SUPER, LEAP, ESQ., CALOR/GELO (segurar) e TURBO (liga/desliga). Os botões disparam os mesmos eventos de teclado do desktop, então toda a jogabilidade é reaproveitada. Botão ⏸ reabre o menu.
+- UI: HUD compacto, tela cheia + trava em paisagem ao tocar JOGAR, aviso para girar o aparelho em retrato, safe-areas, sem zoom/scroll por gestos.
+- Perfil leve (`qualityProfile`): cidade 11×11 avenidas, 40 carros, 36 pedestres, sombra 1024 px/±120 m, pixel ratio ≤ 1,25 (começa em 1,0), sem MSAA nem bloom, resolução dinâmica a partir de 24 ms. Anéis fora do mapa menor são omitidos.

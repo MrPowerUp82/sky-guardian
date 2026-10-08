@@ -18,10 +18,24 @@ import { ParticleBursts } from './game/fx/particle-bursts.js';
 import { CloudLayer, BirdFlocks } from './game/fx/ambient-life.js';
 import { InstancedTraffic } from './game/world/instanced-traffic.js';
 import { AdaptiveResolution } from './game/fx/adaptive-quality.js';
+import { isTouchDevice, qualityProfile } from './game/ui/device.js';
+import { createTouchControls } from './game/ui/touch-controls.js';
 
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.6));
+// Phones and tablets get the touch UI plus a lighter profile (smaller map,
+// fewer actors, no MSAA/bloom). `?touch=1` / `?touch=0` force the choice.
+const IS_TOUCH = isTouchDevice({
+  search: location.search,
+  maxTouchPoints: navigator.maxTouchPoints,
+  coarsePointer: matchMedia('(pointer: coarse)').matches,
+  userAgent: navigator.userAgent
+});
+const PROFILE = qualityProfile(IS_TOUCH, devicePixelRatio);
+document.body.classList.toggle('touch', IS_TOUCH);
+
+// MSAA lives in the post-processing target; the canvas only needs it with ?fx=off.
+const renderer = new THREE.WebGLRenderer({ antialias: new URLSearchParams(location.search).get('fx') === 'off', powerPreference: 'high-performance' });
+renderer.setPixelRatio(PROFILE.startPixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -40,7 +54,7 @@ scene.background = DAY_BACKGROUND.clone();
 scene.fog = worldFog;
 
 const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 40000);
-const postFx = new PostFx(renderer, scene, camera, { quality: postFxQualityFromUrl(location.search) });
+const postFx = new PostFx(renderer, scene, camera, { quality: postFxQualityFromUrl(location.search, PROFILE.fx) });
 
 const hemi = new THREE.HemisphereLight(0xd7efff, 0x43513b, 2.15);
 scene.add(hemi);
@@ -49,9 +63,9 @@ sun.castShadow = true;
 // The shadow frustum follows the hero (see updateSunShadow), so a tight 2k map
 // stays sharp no matter how large the city is.
 const SUN_OFFSET = new THREE.Vector3(-120, 210, 90);
-const SUN_SHADOW_RANGE = 170;
+const SUN_SHADOW_RANGE = PROFILE.shadowRange;
 sun.position.copy(SUN_OFFSET);
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(PROFILE.shadowMap, PROFILE.shadowMap);
 sun.shadow.camera.left = -SUN_SHADOW_RANGE;
 sun.shadow.camera.right = SUN_SHADOW_RANGE;
 sun.shadow.camera.top = SUN_SHADOW_RANGE;
@@ -133,7 +147,7 @@ scene.add(world);
 // V18: a 15 x 15 avenue grid (~1.4 km across). Everything that used to hard-code
 // the old +-384 extent now derives from these constants.
 const ROAD_SPACING = 96;
-const ROAD_COUNT = 15;
+const ROAD_COUNT = PROFILE.roadCount;
 const roadLaneCenters = makeRoadCenters(ROAD_COUNT, ROAD_SPACING);
 const CITY_HALF = (ROAD_COUNT - 1) / 2 * ROAD_SPACING;
 const WORLD_LIMIT = CITY_HALF + 46;
@@ -219,11 +233,11 @@ const CITY_ASSETS = {
   npcs: ['a','b','c','d','e','f'].flatMap(k => [`female-${k}`, `male-${k}`]).map(k => `packs/mini-characters/character-${k}.glb`)
 };
 
-const TRAFFIC_COUNT = 96;
-const TRAFFIC_RENDER_RADIUS = 200;
-const NPC_RENDER_RADIUS = 170;
+const TRAFFIC_COUNT = PROFILE.traffic;
+const TRAFFIC_RENDER_RADIUS = PROFILE.trafficRadius;
+const NPC_RENDER_RADIUS = PROFILE.npcRadius;
 let carRenderer = null;
-const CROWD_COUNT = 120;
+const CROWD_COUNT = PROFILE.crowd;
 const trafficActors = [];
 const npcActors = [];
 const npcMixers = [];
@@ -2348,7 +2362,8 @@ const ringPositions = [
   [300,170,-520], [-300,125,480], [600,140,430], [20,230,-620]
 ];
 const ringMat = new THREE.MeshStandardMaterial({ color: 0x3be8ff, emissive: 0x0b9fc0, emissiveIntensity: 4, roughness: .25, metalness: .15 });
-for (const p of ringPositions) {
+// Rings that would fall outside a smaller (mobile) city are skipped.
+for (const p of ringPositions.filter(r => Math.abs(r[0]) < CITY_HALF - 12 && Math.abs(r[2]) < CITY_HALF - 12)) {
   const ring = new THREE.Mesh(new THREE.TorusGeometry(6, .75, 10, 28), ringMat.clone());
   ring.position.set(...p);
   ring.rotation.y = rng()*Math.PI;
@@ -2368,10 +2383,10 @@ const skyDome = new SkyDome({
   space: SPACE_BACKGROUND
 });
 scene.add(skyDome.mesh);
-const cloudLayer = new CloudLayer(scene, rng, { extent: CITY_HALF + 520 });
+const cloudLayer = new CloudLayer(scene, rng, { extent: CITY_HALF + 520, count: PROFILE.clouds });
 const cloudMat = cloudLayer.material;
 const clouds = cloudLayer.clouds;
-const birds = new BirdFlocks(scene, rng, { extent: CITY_HALF * .85 });
+const birds = new BirdFlocks(scene, rng, { extent: CITY_HALF * .85, flocks: PROFILE.flocks });
 const bursts = new ParticleBursts(scene);
 
 // ---------------------------------------------------------------------------
@@ -2974,8 +2989,33 @@ addEventListener('keyup', e => {
 // requestPointerLock() returns a promise that rejects when the browser refuses
 // (e.g. clicking right after Esc); the existing "click to continue" hint covers it.
 function lockPointer() {
-  renderer.domElement.requestPointerLock()?.catch?.(() => {});
+  // Touch browsers (iOS Safari) have no pointer lock at all.
+  if (IS_TOUCH) return;
+  renderer.domElement.requestPointerLock?.()?.catch?.(() => {});
 }
+
+function lookBy(dYaw, dPitch) {
+  yaw += dYaw;
+  pitch = THREE.MathUtils.clamp(pitch + dPitch, -1.05, .8);
+}
+
+function enterFullscreenLandscape() {
+  const root = document.documentElement;
+  if (!document.fullscreenElement && root.requestFullscreen) {
+    root.requestFullscreen({ navigationUI: 'hide' })
+      .then(() => screen.orientation?.lock?.('landscape'))
+      .catch(() => {});
+  }
+}
+
+const helpPanel = document.querySelector('#help');
+const touchControls = IS_TOUCH ? createTouchControls({
+  look: lookBy,
+  onMenu: () => {
+    touchControls.releaseAll();
+    helpPanel.classList.remove('hidden');
+  }
+}) : null;
 renderer.domElement.addEventListener('click', () => {
   if (document.querySelector('#help').classList.contains('hidden')) lockPointer();
 });
@@ -2983,6 +3023,7 @@ document.querySelector('#play').addEventListener('click', e => {
   e.currentTarget.blur(); // Space is the dodge key; keep it from re-pressing the button
   document.querySelector('#help').classList.add('hidden');
   lockPointer();
+  if (IS_TOUCH) enterFullscreenLandscape();
 });
 document.addEventListener('pointerlockchange', () => {
   if (!document.pointerLockElement && document.querySelector('#help').classList.contains('hidden')) showMessage('Clique na tela para continuar', 1200);
@@ -4608,10 +4649,10 @@ function updateAtmosphere(dt, time) {
   }, dt);
 }
 
-const MAX_PIXEL_RATIO = Math.min(devicePixelRatio, 1.6);
+const MAX_PIXEL_RATIO = PROFILE.maxPixelRatio;
 const adaptiveResolution = new URLSearchParams(location.search).get('adaptive') === 'off'
   ? null
-  : new AdaptiveResolution({ min: .65, max: MAX_PIXEL_RATIO, targetMs: 19 });
+  : new AdaptiveResolution({ min: PROFILE.minPixelRatio, max: MAX_PIXEL_RATIO, ratio: PROFILE.startPixelRatio, targetMs: PROFILE.targetMs });
 let lastFrameStamp = 0;
 let degradeLevel = 0;
 
@@ -4685,7 +4726,8 @@ function animate(timestamp) {
   updateCamera(dt);
   updateImpactEffects(dt);
   updateAtmosphere(dt, time);
-  postFx.render();
+  // Portrait phones show a "rotate" screen; don't spend GPU behind it.
+  if (!(IS_TOUCH && innerHeight > innerWidth)) postFx.render();
   requestAnimationFrame(animate);
 }
 requestAnimationFrame(animate);
@@ -4693,7 +4735,7 @@ requestAnimationFrame(animate);
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
-  applyPixelRatio(adaptiveResolution ? adaptiveResolution.ratio : MAX_PIXEL_RATIO);
+  applyPixelRatio(adaptiveResolution ? adaptiveResolution.ratio : PROFILE.startPixelRatio);
 });
 
 function lerpAngle(a,b,t) {
@@ -4792,7 +4834,7 @@ function triggerLeapAttackImpact() {
 // Optional debug handle for automated/browser inspection: open index.html?debug.
 if (new URLSearchParams(location.search).has('debug')) {
   window.__sky = {
-    THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio,
+    THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio, IS_TOUCH, PROFILE, lookBy,
     get mixer() { return mixer; },
     get enemyMixer() { return enemyMixer; },
     get importedHero() { return importedHero; },

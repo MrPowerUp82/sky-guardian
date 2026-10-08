@@ -2,7 +2,10 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#87c8ff" />
   <title>Superman Fan Prototype — Three.js</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="./style.css" />
@@ -63,11 +66,19 @@
       <span><kbd>R</kbd> reiniciar</span>
       <span><kbd>Esc</kbd> liberar mouse</span>
     </div>
+    <div class="touch-help">
+      <span><b>Arraste à esquerda</b> mover / manobrar</span>
+      <span><b>Arraste à direita</b> mirar a câmera e o voo</span>
+      <span><b>VOAR</b> começar / parar de voar · <b>TURBO</b> superaceleração</span>
+      <span><b>SOCO · SUPER · LEAP</b> ataques · <b>ESQ.</b> esquiva</span>
+      <span><b>CALOR / GELO</b> segure para usar os poderes</span>
+    </div>
     <a class="configurator-link" href="./animation-configurator.html">CONFIGURADOR DE ANIMAÇÕES 2.0</a>
     <button id="play">JOGAR</button>
-    <small>Clique na tela para capturar o mouse novamente.</small>
+    <small class="desktop-only">Clique na tela para capturar o mouse novamente.</small>
   </div>
 
+  <div id="rotate-hint"><div>Gire o aparelho para a horizontal</div></div>
   <div id="message"></div>
 
   <script type="module" src="./main.js"></script>
