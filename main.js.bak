@@ -1,0 +1,1901 @@
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { neutralizeVerticalTracks } from './hero-motion.js';
+import { HeroFlightState } from './hero-state.js';
+import { loadCharacterConfig, slotConfig, hitboxById, queueSlotEvents } from './animation-config-runtime.js';
+
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.6));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fcfff);
+scene.fog = new THREE.FogExp2(0xb7ddf7, 0.00145);
+
+const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 2200);
+
+const hemi = new THREE.HemisphereLight(0xd7efff, 0x43513b, 2.15);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff1d0, 4.0);
+sun.position.set(-120, 210, 90);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -470;
+sun.shadow.camera.right = 470;
+sun.shadow.camera.top = 470;
+sun.shadow.camera.bottom = -470;
+sun.shadow.camera.far = 900;
+scene.add(sun);
+
+const rng = mulberry32(74329);
+const gltfLoader = new GLTFLoader();
+gltfLoader.setCrossOrigin('anonymous');
+
+// V8 animation configuration. The game checks a config saved by the visual
+// configurator in localStorage first and falls back to the JSON files in /config.
+const HERO_CONFIG_FALLBACK = {
+  schemaVersion: 2, characterId: 'superman',
+  transform: { rotationDeg: { x:0, y:-90, z:0 }, mirror: { x:false,y:false,z:false }, targetHeight: 2.05 },
+  slots: {
+    idle:{clip:'C003_Idle_01',speed:1,loop:true,fade:.14,events:[]}, run:{clip:'C003_Run_01',speed:1,loop:true,fade:.12,events:[]},
+    takeoff:{clip:'C003_Flying_Intro',speed:1.05,loop:false,fade:.07,events:[]}, hover:{clip:'C003_Flying_Hold',speed:1,loop:true,fade:.13,events:[]},
+    fly:{clip:'C003_Flying',speed:1,loop:true,fade:.13,events:[]}, land:{clip:'C003_Land',speed:1,loop:false,fade:.07,events:[]},
+    punch:{clip:'C003_Punch_01',speed:1.05,loop:false,fade:.07,events:[]}, superPunch:{clip:'C003_N_Attack_01',speed:1.16,loop:false,fade:.06,events:[]},
+    heatVision:{clip:'C003_Laser_Air',speed:1.05,loop:false,fade:.06,events:[]}
+  }, hitboxes: []
+};
+const ENEMY_CONFIG_FALLBACK = {
+  schemaVersion: 2, characterId: 'jason',
+  transform: { rotationDeg: { x:0, y:-90, z:0 }, mirror: { x:false,y:false,z:false }, targetHeight: 2.35 },
+  slots: {
+    idle:{clip:'Jason_Nav_Idle',speed:1,loop:true,fade:.16,events:[]}, walk:{clip:'Jason_Walk',speed:1.02,loop:true,fade:.14,events:[]}, run:{clip:'Jason_Walk',speed:1.28,loop:true,fade:.12,events:[]},
+    attack1:{clip:'Jason_Attack_Combo_01',speed:1.22,loop:false,fade:.06,events:[]}, attack2:{clip:'Jason_Attack_Combo_02',speed:1.10,loop:false,fade:.06,events:[]},
+    attack3:{clip:'Jason_Attack_Combo_03',speed:1.10,loop:false,fade:.06,events:[]}, specialAttack:{clip:'Jason_Attack_Dash_Shoulder_Bash',speed:1.08,loop:false,fade:.05,events:[]},
+    hurt:{clip:'Jason_HR_Deflect',speed:1.15,loop:false,fade:.06,events:[]}, death:{clip:'Jason_HR_Flyback_B_Enter',speed:.86,loop:false,fade:.04,events:[]}
+  }, hitboxes: []
+};
+let heroAnimConfig = HERO_CONFIG_FALLBACK;
+let enemyAnimConfig = ENEMY_CONFIG_FALLBACK;
+const heroConfigPromise = loadCharacterConfig('./config/superman-animation-config.json', HERO_CONFIG_FALLBACK, 'sky-guardian:anim:superman');
+const enemyConfigPromise = loadCharacterConfig('./config/jason-animation-config.json', ENEMY_CONFIG_FALLBACK, 'sky-guardian:anim:jason');
+
+function applyConfiguredOrientation(group, config) {
+  const r = config?.transform?.rotationDeg || {x:0,y:-90,z:0};
+  const m = config?.transform?.mirror || {x:false,y:false,z:false};
+  group.rotation.set(THREE.MathUtils.degToRad(Number(r.x)||0), THREE.MathUtils.degToRad(Number(r.y)||0), THREE.MathUtils.degToRad(Number(r.z)||0));
+  group.scale.set(m.x ? -1 : 1, m.y ? -1 : 1, m.z ? -1 : 1);
+}
+
+// ---------------------------------------------------------------------------
+// WORLD / CC0 CITY
+// ---------------------------------------------------------------------------
+const world = new THREE.Group();
+scene.add(world);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(1500, 1500),
+  new THREE.MeshStandardMaterial({ color: 0x5d7b49, roughness: 1 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.06;
+ground.receiveShadow = true;
+world.add(ground);
+
+const TGE = 'https://raw.githubusercontent.com/Hidencod/tge-assets/main/';
+const assetUrl = path => TGE + path;
+
+const CITY_ASSETS = {
+  buildings: [
+    'packs/city-kit-commercial/building-a.glb',
+    'packs/city-kit-commercial/building-c.glb',
+    'packs/city-kit-commercial/building-e.glb',
+    'packs/city-kit-commercial/building-g.glb',
+    'packs/city-kit-commercial/building-i.glb',
+    'packs/city-kit-commercial/building-skyscraper-a.glb',
+    'packs/city-kit-commercial/building-skyscraper-b.glb',
+    'packs/city-kit-commercial/building-skyscraper-d.glb'
+  ],
+  roadStraight: 'packs/city-kit-roads/road-straight.glb',
+  roadCross: 'packs/city-kit-roads/road-crossroad.glb',
+  streetLight: 'packs/city-kit-roads/light-curved.glb',
+  trafficLight: 'packs/city-kit-roads/traffic-light-hanging.glb',
+  cars: [
+    'packs/car-kit/sedan.glb',
+    'packs/car-kit/sedan-sports.glb',
+    'packs/car-kit/suv.glb',
+    'packs/car-kit/taxi.glb',
+    'packs/car-kit/police.glb'
+  ],
+  trees: [
+    'packs/nature-kit/tree-oak.glb',
+    'packs/nature-kit/tree-fat.glb',
+    'packs/nature-kit/tree-pinedefaulta.glb'
+  ],
+  npcs: [
+    'packs/mini-characters/character-female-a.glb',
+    'packs/mini-characters/character-female-c.glb',
+    'packs/mini-characters/character-female-e.glb',
+    'packs/mini-characters/character-male-a.glb',
+    'packs/mini-characters/character-male-c.glb',
+    'packs/mini-characters/character-male-e.glb'
+  ]
+};
+
+const trafficActors = [];
+const npcActors = [];
+const npcMixers = [];
+const roadLaneCenters = [-384, -288, -192, -96, 0, 96, 192, 288, 384];
+const WORLD_LIMIT = 430;
+const CITY_EDGE = 416;
+const TILE = 32;
+const buildingColliders = [];
+const parkBlocks = [];
+const plazaBlocks = [];
+
+const statusEl = document.querySelector('#asset-status');
+let cityLoaded = false;
+let loadedAssetCount = 0;
+let totalAssetCount = 1;
+function setAssetStatus(text) {
+  if (statusEl) statusEl.textContent = text;
+}
+function updateAssetStatus() {
+  if (!statusEl) return;
+  if (cityLoaded) return;
+  statusEl.textContent = `Carregando cidade CC0... ${loadedAssetCount}/${totalAssetCount}`;
+}
+
+function loadGLTF(url) {
+  return new Promise((resolve, reject) => {
+    gltfLoader.load(url, gltf => {
+      loadedAssetCount++;
+      updateAssetStatus();
+      resolve(gltf);
+    }, undefined, reject);
+  });
+}
+
+function prepScene(root, { shadows = true } = {}) {
+  root.traverse(obj => {
+    if (!obj.isMesh) return;
+    obj.castShadow = shadows;
+    obj.receiveShadow = shadows;
+    if (obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const mat of mats) {
+        if ('roughness' in mat) mat.roughness = Math.max(mat.roughness ?? 0.7, 0.45);
+      }
+    }
+  });
+  return root;
+}
+
+function normalizedInstance(template, target, axis = 'height', skinned = false) {
+  const wrapper = new THREE.Group();
+  const object = skinned ? cloneSkeleton(template) : template.clone(true);
+  wrapper.add(object);
+
+  const box = new THREE.Box3().setFromObject(object);
+  const size = box.getSize(new THREE.Vector3());
+  const denom = axis === 'height' ? size.y : Math.max(size.x, size.z);
+  const scale = denom > 0.0001 ? target / denom : 1;
+  object.scale.multiplyScalar(scale);
+  object.updateMatrixWorld(true);
+
+  const box2 = new THREE.Box3().setFromObject(object);
+  const center = box2.getCenter(new THREE.Vector3());
+  object.position.x -= center.x;
+  object.position.z -= center.z;
+  object.position.y -= box2.min.y;
+  return wrapper;
+}
+
+function makeFallbackCity() {
+  // Only visible if remote assets fail. The normal version uses real GLBs.
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x292d33, roughness: 1 });
+  for (const v of roadLaneCenters) {
+    const a = new THREE.Mesh(new THREE.BoxGeometry(840, 0.08, 18), roadMat);
+    a.position.set(0, 0.02, v); a.receiveShadow = true; world.add(a);
+    const b = a.clone(); b.rotation.y = Math.PI / 2; b.position.set(v, 0.02, 0); world.add(b);
+  }
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mat = new THREE.MeshStandardMaterial({ color: 0xa8b0b8, roughness: .85 });
+  for (let x = -384; x <= 384; x += 48) {
+    for (let z = -384; z <= 384; z += 48) {
+      if (roadLaneCenters.some(v => Math.abs(x - v) < 20 || Math.abs(z - v) < 20)) continue;
+      const h = 18 + rng() * 60;
+      const m = new THREE.Mesh(geo, mat);
+      m.scale.set(26, h, 26); m.position.set(x, h / 2, z); world.add(m);
+    }
+  }
+}
+
+async function buildCC0City() {
+  totalAssetCount = CITY_ASSETS.buildings.length + CITY_ASSETS.cars.length + CITY_ASSETS.trees.length + CITY_ASSETS.npcs.length + 4;
+  updateAssetStatus();
+  try {
+    const [buildingGLTFs, roadStraightGLTF, roadCrossGLTF, lightGLTF, trafficLightGLTF, carGLTFs, treeGLTFs, npcGLTFs] = await Promise.all([
+      Promise.all(CITY_ASSETS.buildings.map(p => loadGLTF(assetUrl(p)))),
+      loadGLTF(assetUrl(CITY_ASSETS.roadStraight)),
+      loadGLTF(assetUrl(CITY_ASSETS.roadCross)),
+      loadGLTF(assetUrl(CITY_ASSETS.streetLight)),
+      loadGLTF(assetUrl(CITY_ASSETS.trafficLight)),
+      Promise.all(CITY_ASSETS.cars.map(p => loadGLTF(assetUrl(p)))),
+      Promise.all(CITY_ASSETS.trees.map(p => loadGLTF(assetUrl(p)))),
+      Promise.all(CITY_ASSETS.npcs.map(p => loadGLTF(assetUrl(p))))
+    ]);
+
+    const buildingTemplates = buildingGLTFs.map((g, i) => ({
+      scene: prepScene(g.scene, { shadows: true }),
+      kind: i < 5 ? 'midrise' : 'skyscraper'
+    }));
+    const straightTemplate = prepScene(roadStraightGLTF.scene, { shadows: false });
+    const crossTemplate = prepScene(roadCrossGLTF.scene, { shadows: false });
+    const lightTemplate = prepScene(lightGLTF.scene, { shadows: true });
+    const trafficLightTemplate = prepScene(trafficLightGLTF.scene, { shadows: true });
+    const carTemplates = carGLTFs.map(g => prepScene(g.scene, { shadows: true }));
+    const treeTemplates = treeGLTFs.map(g => prepScene(g.scene, { shadows: true }));
+    const npcTemplates = npcGLTFs.map((g, i) => ({ scene: prepScene(g.scene, { shadows: true }), animations: g.animations, i }));
+
+    buildRoadGrid(straightTemplate, crossTemplate);
+    buildRoadMarkings();
+    buildBuildings(buildingTemplates);
+    buildStreetFurniture(lightTemplate, trafficLightTemplate, treeTemplates);
+    buildTraffic(carTemplates);
+    buildCrowd(npcTemplates);
+
+    cityLoaded = true;
+    setAssetStatus(heroReady && enemyReady ? 'Cidade V9 CC0 · distritos + parques + tráfego + NPCs · Superman + Jason' : heroReady ? 'Cidade V9 CC0 · distritos + parques + tráfego + NPCs · Superman local' : 'Cidade V9 CC0 · distritos, parques, ruas, carros, árvores e NPCs carregados');
+  } catch (err) {
+    console.warn('Falha ao carregar cidade CC0; usando fallback:', err);
+    makeFallbackCity();
+    cityLoaded = true;
+    setAssetStatus('Falha de rede · cidade fallback ativa');
+  }
+}
+
+function buildRoadGrid(straightTemplate, crossTemplate) {
+  // V9: nine avenues + nine streets create a much denser, continuous city.
+  // Roads are still assembled from authored CC0 tiles; the procedural layer
+  // only decides where each real road asset goes.
+  const roadSet = new Set(roadLaneCenters.map(v => Math.round(v / TILE)));
+  const minCell = -13, maxCell = 13;
+  for (let gx = minCell; gx <= maxCell; gx++) {
+    for (let gz = minCell; gz <= maxCell; gz++) {
+      const xRoad = roadSet.has(gx);
+      const zRoad = roadSet.has(gz);
+      if (!xRoad && !zRoad) continue;
+      const isCross = xRoad && zRoad;
+      const tile = normalizedInstance(isCross ? crossTemplate : straightTemplate, TILE, 'footprint');
+      tile.position.set(gx * TILE, 0, gz * TILE);
+      if (!isCross && xRoad) tile.rotation.y = Math.PI / 2;
+      world.add(tile);
+    }
+  }
+}
+
+function buildRoadMarkings() {
+  // A lightweight instanced overlay gives long avenues readable lanes and
+  // crosswalks without adding hundreds of individual draw calls.
+  const lineMat = new THREE.MeshStandardMaterial({ color: 0xf3e7b2, roughness: .9 });
+  const crossMat = new THREE.MeshStandardMaterial({ color: 0xf5f5f2, roughness: .95 });
+  const dashGeo = new THREE.BoxGeometry(5.6, .018, .16);
+  const dashTransforms = [];
+  for (const road of roadLaneCenters) {
+    for (let t = -400; t <= 400; t += 14) {
+      if (roadLaneCenters.some(v => Math.abs(t - v) < 18)) continue;
+      dashTransforms.push({ x:t, z:road, rot:0 });
+      dashTransforms.push({ x:road, z:t, rot:Math.PI / 2 });
+    }
+  }
+  const dashes = new THREE.InstancedMesh(dashGeo, lineMat, dashTransforms.length);
+  const dummy = new THREE.Object3D();
+  dashTransforms.forEach((d, i) => {
+    dummy.position.set(d.x, .095, d.z);
+    dummy.rotation.set(0, d.rot, 0);
+    dummy.updateMatrix();
+    dashes.setMatrixAt(i, dummy.matrix);
+  });
+  dashes.receiveShadow = false;
+  world.add(dashes);
+
+  const stripeGeo = new THREE.BoxGeometry(1.0, .022, 8.2);
+  const stripes = [];
+  for (const x of roadLaneCenters) {
+    for (const z of roadLaneCenters) {
+      for (let i = -3; i <= 3; i++) {
+        const o = i * 1.7;
+        stripes.push({x:x + o, z:z - 11.2, rot:0});
+        stripes.push({x:x + o, z:z + 11.2, rot:0});
+        stripes.push({x:x - 11.2, z:z + o, rot:Math.PI/2});
+        stripes.push({x:x + 11.2, z:z + o, rot:Math.PI/2});
+      }
+    }
+  }
+  const crossings = new THREE.InstancedMesh(stripeGeo, crossMat, stripes.length);
+  stripes.forEach((d, i) => {
+    dummy.position.set(d.x, .102, d.z);
+    dummy.rotation.set(0, d.rot, 0);
+    dummy.updateMatrix();
+    crossings.setMatrixAt(i, dummy.matrix);
+  });
+  world.add(crossings);
+}
+
+function registerBuildingCollider(object) {
+  object.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(object);
+  if (!box.isEmpty()) {
+    // Slightly shrink the vertical range at street level so awnings and tiny
+    // decorative pieces do not feel like invisible walls.
+    box.min.x += 0.25; box.max.x -= 0.25;
+    box.min.z += 0.25; box.max.z -= 0.25;
+    buildingColliders.push(box);
+  }
+}
+
+function buildBuildings(templates) {
+  // V9 district planner: the center becomes a dense commercial core, the
+  // middle ring mixes towers/midrises, and the outer blocks open up into
+  // residential-looking lots, plazas and parks. This avoids the old repeated
+  // four-buildings-per-block pattern while preserving the authored GLB scale.
+  const blockCenters = [];
+  for (let i = 0; i < roadLaneCenters.length - 1; i++) {
+    blockCenters.push((roadLaneCenters[i] + roadLaneCenters[i + 1]) * .5);
+  }
+  const midrise = templates.filter(t => t.kind === 'midrise');
+  const skyscrapers = templates.filter(t => t.kind === 'skyscraper');
+  const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0xb8babd, roughness: .96 });
+  const plazaMat = new THREE.MeshStandardMaterial({ color: 0xc8c3b6, roughness: .93 });
+  const parkMat = new THREE.MeshStandardMaterial({ color: 0x627f4c, roughness: 1 });
+  const blockGeo = new THREE.BoxGeometry(65, .10, 65);
+  let count = 0;
+
+  const choose = pool => pool[(count++ + Math.floor(rng() * pool.length)) % pool.length];
+  const placeBuilding = (data, x, z, footprint, rot = 0) => {
+    if (!data) return null;
+    const b = normalizedInstance(data.scene, footprint, 'footprint');
+    b.position.set(x, 0, z);
+    b.rotation.y = rot;
+    world.add(b);
+    registerBuildingCollider(b);
+    return b;
+  };
+
+  for (const bx of blockCenters) {
+    for (const bz of blockCenters) {
+      const radial = Math.hypot(bx, bz);
+      const core = radial < 125;
+      const mid = radial < 285;
+      const roll = rng();
+      const parkChance = core ? .025 : mid ? .07 : .17;
+      const plazaChance = core ? .14 : mid ? .07 : .035;
+      const isPark = roll < parkChance;
+      const isPlaza = !isPark && roll < parkChance + plazaChance;
+
+      const pad = new THREE.Mesh(blockGeo, isPark ? parkMat : isPlaza ? plazaMat : sidewalkMat);
+      pad.position.set(bx, .01, bz);
+      pad.receiveShadow = true;
+      world.add(pad);
+
+      if (isPark) {
+        parkBlocks.push({ x: bx, z: bz });
+        continue;
+      }
+
+      const quarter = Math.round(rng() * 3) * Math.PI / 2;
+      if (isPlaza) {
+        plazaBlocks.push({ x: bx, z: bz });
+        const pool = core && skyscrapers.length ? skyscrapers : midrise;
+        placeBuilding(choose(pool), bx + (rng()-.5)*9, bz + (rng()-.5)*9, core ? 27 : 23, quarter);
+        continue;
+      }
+
+      if (core && skyscrapers.length) {
+        // Downtown campus: one signature tower plus smaller street-wall massing.
+        placeBuilding(choose(skyscrapers), bx + (rng()-.5)*4, bz + (rng()-.5)*4, 28 + rng()*4, quarter);
+        if (rng() > .22) placeBuilding(choose(midrise), bx - 22, bz + 20, 17 + rng()*3, quarter + Math.PI/2);
+        if (rng() > .35) placeBuilding(choose(midrise), bx + 21, bz - 20, 17 + rng()*3, quarter);
+      } else if (mid && rng() < .43 && skyscrapers.length) {
+        // Mixed-use blocks: tower set back from the corner, with one/two lower buildings.
+        const sx = rng() > .5 ? 1 : -1;
+        const sz = rng() > .5 ? 1 : -1;
+        placeBuilding(choose(skyscrapers), bx + sx*10, bz + sz*10, 25 + rng()*4, quarter);
+        placeBuilding(choose(midrise), bx - sx*20, bz + sz*18, 18 + rng()*4, quarter + Math.PI/2);
+        if (rng() > .45) placeBuilding(choose(midrise), bx + sx*18, bz - sz*21, 17 + rng()*3, quarter);
+      } else {
+        // Outer/midrise blocks deliberately vary between 2, 3 and 4 lots.
+        const slots = [[-18,-18],[18,-18],[-18,18],[18,18]];
+        const lotCount = mid ? (rng() < .45 ? 4 : 3) : (rng() < .55 ? 2 : 3);
+        const slotOffset = Math.floor(rng() * slots.length);
+        for (let i = 0; i < lotCount; i++) {
+          const [ox, oz] = slots[(slotOffset + i) % slots.length];
+          placeBuilding(choose(midrise), bx + ox + (rng()-.5)*2, bz + oz + (rng()-.5)*2, 18 + rng()*4, quarter + (i%2)*Math.PI/2);
+        }
+      }
+    }
+  }
+
+  // Decorative perimeter skyline makes the city continue visually beyond the
+  // playable boundary instead of ending at a hard row of blocks.
+  for (let i = 0; i < 24 && skyscrapers.length; i++) {
+    const angle = i / 24 * Math.PI * 2;
+    const radius = 455 + (i % 3) * 15;
+    const b = normalizedInstance(skyscrapers[i % skyscrapers.length].scene, 25 + rng() * 7, 'footprint');
+    b.position.set(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
+    b.rotation.y = angle + Math.PI;
+    world.add(b);
+  }
+}
+
+function buildStreetFurniture(lightTemplate, trafficTemplate, treeTemplates) {
+  // Streetlights/trees now follow the expanded avenue grid. Intersections are
+  // left clear for crosswalks and traffic lights.
+  for (const avenue of roadLaneCenters) {
+    for (let t = -400; t <= 400; t += 32) {
+      if (roadLaneCenters.some(v => Math.abs(t - v) < 14)) continue;
+      const side = ((Math.round(t / 32)) & 1) ? 1 : -1;
+
+      const lightA = normalizedInstance(lightTemplate, 6.3, 'height');
+      lightA.position.set(t, 0, avenue + side * 13.5);
+      lightA.rotation.y = side > 0 ? Math.PI : 0;
+      world.add(lightA);
+
+      const lightB = normalizedInstance(lightTemplate, 6.3, 'height');
+      lightB.position.set(avenue + side * 13.5, 0, t);
+      lightB.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+      world.add(lightB);
+
+      if (rng() > .48) {
+        const tree = normalizedInstance(treeTemplates[Math.floor(rng() * treeTemplates.length)], 5.2 + rng() * 3.2, 'height');
+        tree.position.set(t + 9, 0, avenue - side * 13.2);
+        tree.rotation.y = rng() * Math.PI * 2;
+        world.add(tree);
+      }
+    }
+  }
+
+  // Parks get clusters instead of a single token tree.
+  for (const park of parkBlocks) {
+    for (let i = 0; i < 10; i++) {
+      const a = i / 10 * Math.PI * 2 + rng()*.35;
+      const r = 8 + rng()*20;
+      const tree = normalizedInstance(treeTemplates[Math.floor(rng() * treeTemplates.length)], 5.4 + rng()*4, 'height');
+      tree.position.set(park.x + Math.cos(a)*r, 0, park.z + Math.sin(a)*r);
+      tree.rotation.y = rng()*Math.PI*2;
+      world.add(tree);
+    }
+  }
+  for (const plaza of plazaBlocks) {
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI*.5*i + Math.PI*.25;
+      const tree = normalizedInstance(treeTemplates[Math.floor(rng()*treeTemplates.length)], 5.5 + rng()*2, 'height');
+      tree.position.set(plaza.x + Math.cos(a)*25, 0, plaza.z + Math.sin(a)*25);
+      world.add(tree);
+    }
+  }
+
+  for (const x of roadLaneCenters) {
+    for (const z of roadLaneCenters) {
+      if ((Math.round(x/96) + Math.round(z/96)) % 2 !== 0) continue;
+      const tl = normalizedInstance(trafficTemplate, 6.8, 'height');
+      tl.position.set(x + 11.5, 0, z + 11.5);
+      tl.rotation.y = Math.PI * .25;
+      world.add(tl);
+    }
+  }
+}
+
+function buildTraffic(carTemplates) {
+  for (let i = 0; i < 34; i++) {
+    const axis = i % 2 === 0 ? 'x' : 'z';
+    const road = roadLaneCenters[Math.floor(rng() * roadLaneCenters.length)];
+    const direction = rng() > .5 ? 1 : -1;
+    const model = normalizedInstance(carTemplates[i % carTemplates.length], 4.6, 'footprint');
+    const laneOffset = direction * 3.6;
+    const progress = (rng() * 2 - 1) * 410;
+    if (axis === 'x') {
+      model.position.set(progress, .05, road + laneOffset);
+      model.rotation.y = direction > 0 ? Math.PI / 2 : -Math.PI / 2;
+    } else {
+      model.position.set(road - laneOffset, .05, progress);
+      model.rotation.y = direction > 0 ? 0 : Math.PI;
+    }
+    world.add(model);
+    trafficActors.push({ object: model, axis, direction, road, speed: 8 + rng() * 8 });
+  }
+}
+
+function buildCrowd(templates) {
+  for (let i = 0; i < 48; i++) {
+    const data = templates[i % templates.length];
+    const npc = normalizedInstance(data.scene, 1.72, 'height', true);
+    const axis = i % 2 === 0 ? 'x' : 'z';
+    const road = roadLaneCenters[Math.floor(rng() * roadLaneCenters.length)];
+    const direction = rng() > .5 ? 1 : -1;
+    const sidewalkOffset = (rng() > .5 ? 1 : -1) * 13.2;
+    const progress = (rng() * 2 - 1) * 404;
+    if (axis === 'x') {
+      npc.position.set(progress, 0, road + sidewalkOffset);
+      npc.rotation.y = direction > 0 ? Math.PI / 2 : -Math.PI / 2;
+    } else {
+      npc.position.set(road + sidewalkOffset, 0, progress);
+      npc.rotation.y = direction > 0 ? 0 : Math.PI;
+    }
+    world.add(npc);
+
+    let mixer = null;
+    if (data.animations?.length) {
+      mixer = new THREE.AnimationMixer(npc);
+      const preferred = data.animations.find(c => /walk|run/i.test(c.name)) || data.animations[0];
+      mixer.clipAction(preferred).play();
+      npcMixers.push(mixer);
+    }
+    npcActors.push({ object: npc, axis, direction, road, speed: 1.0 + rng() * .8, mixer, phase: rng() * Math.PI * 2 });
+  }
+}
+
+function updateCityLife(dt, time) {
+  for (const car of trafficActors) {
+    const p = car.object.position;
+    if (car.axis === 'x') {
+      p.x += car.direction * car.speed * dt;
+      if (p.x > 420) p.x = -420;
+      if (p.x < -420) p.x = 420;
+    } else {
+      p.z += car.direction * car.speed * dt;
+      if (p.z > 420) p.z = -420;
+      if (p.z < -420) p.z = 420;
+    }
+  }
+  for (const npc of npcActors) {
+    const p = npc.object.position;
+    if (npc.axis === 'x') {
+      p.x += npc.direction * npc.speed * dt;
+      if (p.x > 414) p.x = -414;
+      if (p.x < -414) p.x = 414;
+    } else {
+      p.z += npc.direction * npc.speed * dt;
+      if (p.z > 414) p.z = -414;
+      if (p.z < -414) p.z = 414;
+    }
+    // Tiny whole-body bob is also useful when a particular GLB has no animation clip.
+    npc.object.position.y = Math.max(0, Math.sin(time * 7 + npc.phase) * .025);
+  }
+  for (const mixer of npcMixers) mixer.update(dt);
+}
+
+buildCC0City();
+
+// ---------------------------------------------------------------------------
+// SUPERMAN MODEL (local GLB supplied by the user)
+// ---------------------------------------------------------------------------
+// The original Sketchfab download contains 181 animation clips and is ~57 MB.
+// This project ships a locally optimized GLB containing the mesh/textures plus
+// 13 useful clips for gameplay, bringing the runtime file down to ~11 MB.
+const CHARACTER_URL = './assets/superman/Superman-game.glb';
+
+const hero = new THREE.Group();
+hero.position.set(0, 0.04, 130);
+scene.add(hero);
+
+const heroVisual = new THREE.Group();
+hero.add(heroVisual);
+
+// Orientation adapter for the imported MultiVersus rig.
+// Bone layout confirms this asset is authored with character forward on +X
+// (the eye/face bones extend along +X and left/right is the Z axis), while
+// gameplay in this project uses local +Z as the hero's forward direction.
+// Therefore this is an AXIS conversion, not a mirror: rotate +X -> +Z by -90°.
+// Keeping scale positive also avoids negative-scale/skinning/culling artifacts.
+const modelOrientation = new THREE.Group();
+modelOrientation.rotation.y = -Math.PI / 2;
+heroVisual.add(modelOrientation);
+
+let importedHero = null;
+let mixer = null;
+let currentAction = null;
+let clipMap = new Map();
+let currentAnimName = '';
+let actionLocked = false;
+let heroReady = false;
+const heroBoneMap = new Map();
+let heroEventQueue = [];
+let heroActiveSlot = '';
+
+const GROUND_EPS = 0.04;
+const TAKEOFF_CLEARANCE = 3.35;
+const flightMachine = new HeroFlightState();
+let transitionStartY = GROUND_EPS;
+let transitionTargetY = GROUND_EPS;
+let landingSurfaceY = 0;
+let superPunchImpactTimer = -1;
+let cameraShake = 0;
+const impactEffects = [];
+
+// Lightweight fallback shown only if the local GLB cannot be loaded.
+const fallback = new THREE.Group();
+fallback.scale.setScalar(.48);
+fallback.position.y = .50;
+heroVisual.add(fallback);
+const suit = new THREE.MeshStandardMaterial({ color: 0x174ea6, roughness: .62 });
+const red = new THREE.MeshStandardMaterial({ color: 0xa61d2d, roughness: .7, side: THREE.DoubleSide });
+const skin = new THREE.MeshStandardMaterial({ color: 0xd9a07a, roughness: .85 });
+const dark = new THREE.MeshStandardMaterial({ color: 0x15191f, roughness: .8 });
+const gold = new THREE.MeshStandardMaterial({ color: 0xf2c84b, roughness: .55, metalness: .1 });
+function fallbackMesh(geo, mat, x,y,z, rx=0,ry=0,rz=0) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x,y,z); m.rotation.set(rx,ry,rz);
+  m.castShadow = true; m.receiveShadow = true; fallback.add(m); return m;
+}
+const torso = fallbackMesh(new THREE.CapsuleGeometry(.52, 1.25, 6, 12), suit, 0, 1.25, 0);
+torso.scale.set(1.05,1.1,.72);
+fallbackMesh(new THREE.SphereGeometry(.42, 18, 14), skin, 0, 2.55, 0);
+fallbackMesh(new THREE.SphereGeometry(.43, 16, 10, 0, Math.PI*2, 0, Math.PI*.47), dark, 0, 2.67, -.04, -0.08,0,0);
+fallbackMesh(new THREE.CapsuleGeometry(.19,.9,5,10), suit, -.73,1.35,0, 0,0,.14);
+fallbackMesh(new THREE.CapsuleGeometry(.19,.9,5,10), suit, .73,1.35,0, 0,0,-.14);
+fallbackMesh(new THREE.CapsuleGeometry(.22,1.05,5,10), suit, -.33,-.05,0);
+fallbackMesh(new THREE.CapsuleGeometry(.22,1.05,5,10), suit, .33,-.05,0);
+fallbackMesh(new THREE.BoxGeometry(.48,.48,.74), red, -.33,-.8,.05);
+fallbackMesh(new THREE.BoxGeometry(.48,.48,.74), red, .33,-.8,.05);
+fallbackMesh(new THREE.BoxGeometry(1.1,.16,.55), gold, 0,.55,0);
+fallbackMesh(new THREE.CircleGeometry(.29, 5), gold, 0,1.55,-.39, 0, Math.PI, 0);
+
+function heroStatus(text) {
+  if (!cityLoaded) return;
+  setAssetStatus(text);
+}
+
+gltfLoader.load(CHARACTER_URL, async gltf => {
+  heroAnimConfig = await heroConfigPromise;
+  importedHero = gltf.scene;
+  prepScene(importedHero, { shadows: true });
+
+  // Normalize the authored model to a world-space superhero height.
+  const box = new THREE.Box3().setFromObject(importedHero);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const targetHeight = Number(heroAnimConfig?.transform?.targetHeight) || 2.05;
+  const scale = size.y > 0 ? targetHeight / size.y : 1;
+  importedHero.scale.setScalar(scale);
+  importedHero.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+  // Keep the imported scene itself unrotated. `modelOrientation` above performs
+  // the source-rig +X -> gameplay +Z conversion once, so every animation uses
+  // the same forward axis and the hero no longer flies sideways.
+  importedHero.rotation.y = 0;
+  applyConfiguredOrientation(modelOrientation, heroAnimConfig);
+  modelOrientation.add(importedHero);
+  heroBoneMap.clear();
+  importedHero.traverse(obj => { if (obj.isBone) heroBoneMap.set(obj.name, obj); });
+  fallback.visible = false;
+
+  mixer = new THREE.AnimationMixer(importedHero);
+
+  function sanitizeHeroClip(clip) {
+    const c = clip.clone();
+    const newTracks = neutralizeVerticalTracks(c.tracks);
+    c.tracks = newTracks.map((t, i) => {
+      const orig = c.tracks[i];
+      if (t !== orig) return new THREE.VectorKeyframeTrack(t.name, orig.times, t.values);
+      return orig;
+    });
+    return c;
+  }
+
+  clipMap = new Map(gltf.animations.map(c => {
+    const clean = sanitizeHeroClip(c);
+    return [clean.name, clean];
+  }));
+  heroReady = true;
+
+  const idleCfg = slotConfig(heroAnimConfig, 'idle', { clip:'C003_Idle_01', speed:1, fade:.08, loop:true });
+  const idle = findClip([idleCfg.clip, 'C003_Idle_01', 'C003_Flying_Hold']);
+  if (idle) playClip(idle, idleCfg.fade, false, idleCfg.speed);
+  heroStatus(`Superman local carregado · ${gltf.animations.length} animações de gameplay`);
+}, progress => {
+  if (!cityLoaded || !progress.total) return;
+  const pct = Math.round(progress.loaded / progress.total * 100);
+  setAssetStatus(`Cidade CC0 online · carregando Superman local... ${pct}%`);
+}, err => {
+  console.warn('Falha ao carregar Superman local, usando fallback:', err);
+  heroStatus('Cidade CC0 online · falha no GLB local, personagem fallback ativo');
+});
+
+function findClip(candidates) {
+  if (!clipMap.size) return null;
+  for (const name of candidates) if (clipMap.has(name)) return clipMap.get(name);
+  const lowerEntries = [...clipMap.entries()].map(([name, clip]) => [name.toLowerCase(), clip]);
+  for (const candidate of candidates) {
+    const q = candidate.toLowerCase();
+    const exact = lowerEntries.find(([name]) => name === q);
+    if (exact) return exact[1];
+    const partial = lowerEntries.find(([name]) => name.includes(q));
+    if (partial) return partial[1];
+  }
+  return null;
+}
+
+
+function heroSlot(name, fallback = {}) {
+  return slotConfig(heroAnimConfig, name, fallback);
+}
+function heroSlotClip(name, fallbacks = []) {
+  const cfg = heroSlot(name, { clip: fallbacks[0] || '' });
+  return { cfg, clip: findClip([cfg.clip, ...fallbacks].filter(Boolean)) };
+}
+function boneWorldPoint(boneMap, hitbox, fallbackRoot, fallbackYOffset = 1) {
+  const fallback = fallbackRoot.position.clone().add(new THREE.Vector3(0, fallbackYOffset, 0));
+  if (!hitbox?.bone) return fallback;
+  const bone = boneMap.get(hitbox.bone);
+  if (!bone) return fallback;
+  const p = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  bone.getWorldPosition(p);
+  bone.getWorldQuaternion(q);
+  const off = new THREE.Vector3(Number(hitbox.offset?.x)||0, Number(hitbox.offset?.y)||0, Number(hitbox.offset?.z)||0).applyQuaternion(q);
+  return p.add(off);
+}
+function scheduleHeroEvents(slotName, speed) {
+  heroActiveSlot = slotName;
+  heroEventQueue = queueSlotEvents(heroAnimConfig, slotName, speed);
+  return heroEventQueue.length;
+}
+function dispatchHeroEvent(event) {
+  if (!event) return;
+  if (event.type === 'cameraShake') {
+    cameraShake = Math.max(cameraShake, Number(event.strength) || .5);
+    return;
+  }
+  if (event.type === 'heatVision') {
+    if (enemyUnderAim(280, Number(event.radius) || 1.2)) {
+      damageEnemy(Number(event.damage)||18, hero.position, Number(event.knockback)||0, event.label || 'VISÃO DE CALOR');
+    }
+    return;
+  }
+  if (event.type !== 'damage' || !enemyAlive) return;
+  if (heroActiveSlot === 'superPunch') triggerSuperPunchImpact(false);
+  const hitbox = hitboxById(heroAnimConfig, event.hitboxId);
+  const origin = boneWorldPoint(heroBoneMap, hitbox, hero, 1.05);
+  const enemyCenter = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+  const radius = Number(event.radius) || Number(hitbox?.radius) || 1.8;
+  if (origin.distanceTo(enemyCenter) <= radius + 1.0) {
+    damageEnemy(Number(event.damage)||1, origin, Number(event.knockback)||0, event.label || heroActiveSlot.toUpperCase());
+  }
+}
+function updateHeroEvents(dt) {
+  if (!heroEventQueue.length) return;
+  for (const item of heroEventQueue) item.remaining -= dt;
+  const due = heroEventQueue.filter(item => item.remaining <= 0);
+  heroEventQueue = heroEventQueue.filter(item => item.remaining > 0);
+  for (const item of due) dispatchHeroEvent(item.event);
+}
+
+const activeListeners = new Set();
+
+function transitionTo(clip, opts = {}) {
+  const { fade = 0.16, once = false, timeScale = 1, onFinished = null } = opts;
+  if (!mixer || !clip) return null;
+
+  if (!once && currentAnimName === clip.name && currentAction) {
+    currentAction.timeScale = timeScale;
+    return currentAction;
+  }
+
+  const next = mixer.clipAction(clip, importedHero);
+  next.enabled = true;
+  next.reset();
+  next.timeScale = timeScale;
+  next.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, once ? 1 : Infinity);
+  next.clampWhenFinished = false; // NEVER freeze at last frame
+  next.fadeIn(fade).play();
+
+  if (currentAction && currentAction !== next) {
+    currentAction.fadeOut(fade);
+  }
+
+  currentAction = next;
+  currentAnimName = clip.name;
+
+  if (once) {
+    const listener = e => {
+      if (e.action !== next) return;
+      mixer.removeEventListener('finished', listener);
+      activeListeners.delete(listener);
+      actionLocked = false;
+      // when one-shot ends, we explicitly fade it out so it doesn't linger
+      next.fadeOut(0.12);
+      if (onFinished) onFinished();
+    };
+    mixer.addEventListener('finished', listener);
+    activeListeners.add(listener);
+  }
+
+  return next;
+}
+
+function playClip(clip, fade=.16, once=false, timeScale=1) {
+  if (actionLocked && !once) return currentAction;
+  return transitionTo(clip, { fade, once, timeScale });
+}
+
+function playOneShot(candidates, message, timeScale=1, onComplete=null, slotName='') {
+  if (actionLocked) return false;
+  const cfg = slotName ? heroSlot(slotName, { clip:candidates[0], speed:timeScale, fade:.07, loop:false }) : null;
+  const clip = findClip([cfg?.clip, ...candidates].filter(Boolean));
+  if (!clip || !mixer) {
+    if (message) showMessage(message, 350);
+    if (onComplete) onComplete();
+    return false;
+  }
+  const resolvedSpeed = cfg?.speed ?? timeScale;
+  const resolvedFade = cfg?.fade ?? .07;
+  actionLocked = true;
+  const action = transitionTo(clip, { fade: resolvedFade, once: true, timeScale: resolvedSpeed, onFinished: onComplete });
+  if (!action) { actionLocked = false; return false; }
+  if (slotName) scheduleHeroEvents(slotName, resolvedSpeed);
+  if (message) showMessage(message, 420);
+  return true;
+}
+
+function updateAnimation(speed, boosted) {
+  if (!mixer || !clipMap.size || actionLocked) return;
+  let slotName = 'idle';
+  let fallbacks = ['C003_Idle_01', 'C003_Flying_Hold'];
+  let dynamicScale = 1;
+
+  if (flightMachine.state === 'grounded') {
+    if (speed > .55) {
+      slotName = speed > 4.5 ? 'run' : 'walk';
+      fallbacks = ['C003_Run_01', 'C003_Idle_01'];
+      dynamicScale = THREE.MathUtils.clamp(speed / 5.8, .75, 1.55);
+    }
+  } else if (flightMachine.state === 'flying' || flightMachine.state === 'landingApproach') {
+    if (speed < 1.4) {
+      slotName = 'hover';
+      fallbacks = ['C003_Flying_Hold', 'C003_Idle_01'];
+    } else {
+      slotName = 'fly';
+      fallbacks = ['C003_Flying', 'C003_Flying_Hold'];
+      dynamicScale = boosted ? 1.45 : THREE.MathUtils.lerp(.85, 1.18, THREE.MathUtils.clamp(speed / 50, 0, 1));
+    }
+  }
+  const { cfg, clip } = heroSlotClip(slotName, fallbacks);
+  if (clip) playClip(clip, cfg.fade, false, cfg.speed * dynamicScale);
+}
+
+
+// ---------------------------------------------------------------------------
+// JASON BOSS (local GLB supplied by the user)
+// ---------------------------------------------------------------------------
+// The uploaded Sketchfab GLB originally contains 129 clips and is ~44.8 MB.
+// This build keeps the authored mesh/textures/rig plus 8 gameplay clips,
+// reducing the runtime enemy file to ~11.5 MB without changing its appearance.
+const ENEMY_URL = './assets/jason/Jason-game.glb';
+const enemyRoot = new THREE.Group();
+enemyRoot.position.set(0, GROUND_EPS, 185);
+scene.add(enemyRoot);
+
+const enemyVisual = new THREE.Group();
+enemyRoot.add(enemyVisual);
+
+// Jason's MultiVersus rig uses the same +X-forward convention as the Superman
+// asset. Gameplay uses +Z as forward, so apply the same -90° axis conversion.
+const enemyOrientation = new THREE.Group();
+enemyOrientation.rotation.y = -Math.PI / 2;
+enemyVisual.add(enemyOrientation);
+
+const enemyFallback = new THREE.Group();
+enemyVisual.add(enemyFallback);
+const enemyFallbackMat = new THREE.MeshStandardMaterial({ color: 0x29352f, roughness: .9 });
+const enemyMaskMat = new THREE.MeshStandardMaterial({ color: 0xd8d2be, roughness: .75 });
+const enemyBody = new THREE.Mesh(new THREE.CapsuleGeometry(.62, 1.28, 6, 12), enemyFallbackMat);
+enemyBody.position.y = 1.23; enemyBody.scale.set(1.12, 1.0, .82); enemyBody.castShadow = true; enemyFallback.add(enemyBody);
+const enemyHead = new THREE.Mesh(new THREE.SphereGeometry(.43, 16, 12), enemyFallbackMat);
+enemyHead.position.y = 2.45; enemyHead.castShadow = true; enemyFallback.add(enemyHead);
+const enemyMask = new THREE.Mesh(new THREE.SphereGeometry(.34, 16, 10, -Math.PI*.48, Math.PI*.96, .28, Math.PI*.62), enemyMaskMat);
+enemyMask.position.set(.02, 2.43, .27); enemyMask.rotation.x = Math.PI/2; enemyMask.castShadow = true; enemyFallback.add(enemyMask);
+enemyFallback.scale.setScalar(.86);
+
+const enemyMarker = new THREE.Mesh(
+  new THREE.RingGeometry(1.05, 1.22, 38),
+  new THREE.MeshBasicMaterial({ color: 0xff263e, transparent: true, opacity: .78, side: THREE.DoubleSide, depthWrite: false })
+);
+enemyMarker.rotation.x = -Math.PI / 2;
+enemyMarker.position.y = .035;
+enemyRoot.add(enemyMarker);
+
+let importedEnemy = null;
+let enemyMixer = null;
+let enemyClipMap = new Map();
+let enemyCurrentAction = null;
+let enemyCurrentAnimName = '';
+let enemyActionLocked = false;
+let enemyReady = false;
+const enemyBoneMap = new Map();
+let enemyEventQueue = [];
+let enemyActiveSlot = '';
+let enemyActionToken = 0;
+let enemyAttackCooldown = .6;
+let enemyAttackImpactTimer = -1;
+let enemyAttackDamage = 0;
+let enemyAttackRange = 0;
+let enemyAttackKind = '';
+let enemyHealth = 180;
+const enemyMaxHealth = 180;
+let enemyAlive = true;
+let enemyHitInvuln = 0;
+let enemyRespawnSerial = 0;
+const ENEMY_SPAWN = new THREE.Vector3(0, GROUND_EPS, 185);
+
+let playerHealth = 100;
+const playerMaxHealth = 100;
+let playerInvuln = 0;
+let playerDead = false;
+let normalPunchImpactTimer = -1;
+
+function updateCombatHUD() {
+  const hpEl = document.querySelector('#player-health-value');
+  if (hpEl) hpEl.textContent = Math.max(0, Math.ceil(playerHealth));
+  const fill = document.querySelector('#boss-health-fill');
+  const txt = document.querySelector('#boss-health-text');
+  if (fill) fill.style.width = `${THREE.MathUtils.clamp(enemyHealth / enemyMaxHealth, 0, 1) * 100}%`;
+  if (txt) txt.textContent = enemyAlive ? `${Math.max(0, Math.ceil(enemyHealth))} / ${enemyMaxHealth}` : 'DERROTADO';
+}
+updateCombatHUD();
+
+function sanitizeEnemyClip(clip) {
+  const c = clip.clone();
+  // Keep the authored bone motion, but remove scene-root translation so AI
+  // movement is controlled by gameplay rather than baked root motion.
+  c.tracks = c.tracks.filter(track => !/^Root\.position$/i.test(track.name));
+  return c;
+}
+
+function enemyFindClip(candidates) {
+  if (!enemyClipMap.size) return null;
+  for (const name of candidates) if (enemyClipMap.has(name)) return enemyClipMap.get(name);
+  const entries = [...enemyClipMap.entries()].map(([name, clip]) => [name.toLowerCase(), clip]);
+  for (const candidate of candidates) {
+    const q = candidate.toLowerCase();
+    const exact = entries.find(([name]) => name === q);
+    if (exact) return exact[1];
+    const partial = entries.find(([name]) => name.includes(q));
+    if (partial) return partial[1];
+  }
+  return null;
+}
+
+function enemyPlayClip(clip, fade=.14, once=false, timeScale=1) {
+  if (!enemyMixer || !clip) return null;
+  if (!once && enemyActionLocked) return enemyCurrentAction;
+  if (!once && enemyCurrentAnimName === clip.name && enemyCurrentAction) {
+    enemyCurrentAction.timeScale = timeScale;
+    return enemyCurrentAction;
+  }
+  const next = enemyMixer.clipAction(clip, importedEnemy);
+  next.enabled = true;
+  next.reset();
+  next.timeScale = timeScale;
+  next.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, once ? 1 : Infinity);
+  next.clampWhenFinished = once;
+  next.fadeIn(fade).play();
+  if (enemyCurrentAction && enemyCurrentAction !== next) enemyCurrentAction.fadeOut(fade);
+  enemyCurrentAction = next;
+  enemyCurrentAnimName = clip.name;
+  return next;
+}
+
+function enemySlot(name, fallback={}) {
+  return slotConfig(enemyAnimConfig, name, fallback);
+}
+function scheduleEnemyEvents(slotName, speed) {
+  enemyActiveSlot = slotName;
+  enemyEventQueue = queueSlotEvents(enemyAnimConfig, slotName, speed);
+  return enemyEventQueue.length;
+}
+function dispatchEnemyEvent(event) {
+  if (!event || event.type !== 'damage' || !enemyAlive || playerDead) return;
+  const hitbox = hitboxById(enemyAnimConfig, event.hitboxId);
+  const origin = boneWorldPoint(enemyBoneMap, hitbox, enemyRoot, 1.05);
+  const heroCenter = hero.position.clone().add(new THREE.Vector3(0, 1.0, 0));
+  const radius = Number(event.radius) || Number(hitbox?.radius) || 2.2;
+  if (origin.distanceTo(heroCenter) > radius + .85) return;
+  const dir = heroCenter.clone().sub(origin); dir.y = 0;
+  if (dir.lengthSq() < .001) dir.set(0,0,1).applyQuaternion(enemyRoot.quaternion);
+  dir.normalize();
+  damagePlayer(Number(event.damage)||1, dir);
+}
+function updateEnemyEvents(dt) {
+  if (!enemyEventQueue.length) return;
+  for (const item of enemyEventQueue) item.remaining -= dt;
+  const due = enemyEventQueue.filter(item => item.remaining <= 0);
+  enemyEventQueue = enemyEventQueue.filter(item => item.remaining > 0);
+  for (const item of due) dispatchEnemyEvent(item.event);
+}
+
+function enemyPlayOneShot(candidates, timeScale=1, onComplete=null, slotName='') {
+  const cfg = slotName ? enemySlot(slotName, { clip:candidates[0], speed:timeScale, fade:.06, loop:false }) : null;
+  const clip = enemyFindClip([cfg?.clip, ...candidates].filter(Boolean));
+  if (!clip || !enemyMixer) return false;
+  enemyActionLocked = true;
+  const token = ++enemyActionToken;
+  const resolvedSpeed = cfg?.speed ?? timeScale;
+  const action = enemyPlayClip(clip, cfg?.fade ?? .06, true, resolvedSpeed);
+  if (!action) { enemyActionLocked = false; return false; }
+  if (slotName) scheduleEnemyEvents(slotName, resolvedSpeed);
+  const onFinished = e => {
+    if (e.action !== action) return;
+    enemyMixer.removeEventListener('finished', onFinished);
+    if (token !== enemyActionToken) return;
+    enemyActionLocked = false;
+    enemyCurrentAction = null;
+    enemyCurrentAnimName = '';
+    if (onComplete) onComplete();
+  };
+  enemyMixer.addEventListener('finished', onFinished);
+  return true;
+}
+
+function enemyIdle() {
+  if (enemyActionLocked || !enemyAlive) return;
+  const cfg = enemySlot('idle', {clip:'Jason_Nav_Idle',speed:1,fade:.16});
+  const clip = enemyFindClip([cfg.clip, 'Jason_Nav_Idle']);
+  if (clip) enemyPlayClip(clip, cfg.fade, false, cfg.speed);
+}
+
+function enemyWalk(run=false) {
+  if (enemyActionLocked || !enemyAlive) return;
+  const name = run ? 'run' : 'walk';
+  const cfg = enemySlot(name, {clip:'Jason_Walk',speed:run?1.28:1.02,fade:.14});
+  const clip = enemyFindClip([cfg.clip, 'Jason_Walk', 'Jason_Nav_Idle']);
+  if (clip) enemyPlayClip(clip, cfg.fade, false, cfg.speed);
+}
+
+gltfLoader.load(ENEMY_URL, async gltf => {
+  enemyAnimConfig = await enemyConfigPromise;
+  importedEnemy = gltf.scene;
+  prepScene(importedEnemy, { shadows: true });
+
+  const box = new THREE.Box3().setFromObject(importedEnemy);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const targetHeight = Number(enemyAnimConfig?.transform?.targetHeight) || 2.35;
+  const scale = size.y > 0 ? targetHeight / size.y : 1;
+  importedEnemy.scale.setScalar(scale);
+  importedEnemy.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+  importedEnemy.rotation.y = 0;
+  applyConfiguredOrientation(enemyOrientation, enemyAnimConfig);
+  enemyOrientation.add(importedEnemy);
+  enemyBoneMap.clear();
+  importedEnemy.traverse(obj => { if (obj.isBone) enemyBoneMap.set(obj.name, obj); });
+  enemyFallback.visible = false;
+
+  enemyMixer = new THREE.AnimationMixer(importedEnemy);
+  enemyClipMap = new Map(gltf.animations.map(c => {
+    const clean = sanitizeEnemyClip(c);
+    return [clean.name, clean];
+  }));
+  enemyReady = true;
+  enemyAlive = true;
+  enemyRoot.position.copy(ENEMY_SPAWN);
+  enemyIdle();
+  updateCombatHUD();
+  if (cityLoaded && heroReady) setAssetStatus(`Cidade CC0 online · Superman + Jason locais · ${gltf.animations.length} animações do boss`);
+}, progress => {
+  if (!cityLoaded || !progress.total) return;
+  const pct = Math.round(progress.loaded / progress.total * 100);
+  setAssetStatus(`Cidade CC0 online · carregando Jason local... ${pct}%`);
+}, err => {
+  console.warn('Falha ao carregar Jason local; usando fallback:', err);
+  enemyReady = true;
+  enemyAlive = true;
+  if (cityLoaded) setAssetStatus('Cidade CC0 online · Jason fallback ativo');
+});
+
+function resolveEnemyBuildingCollision(previousPosition) {
+  const center = new THREE.Vector3(enemyRoot.position.x, enemyRoot.position.y + 1.15, enemyRoot.position.z);
+  for (const box of buildingColliders) {
+    if (center.y < box.min.y - .2 || center.y > box.max.y + .2) continue;
+    if (center.x > box.min.x - .72 && center.x < box.max.x + .72 &&
+        center.z > box.min.z - .72 && center.z < box.max.z + .72) {
+      enemyRoot.position.x = previousPosition.x;
+      enemyRoot.position.z = previousPosition.z;
+      return true;
+    }
+  }
+  return false;
+}
+
+function pushEnemyFrom(source, amount) {
+  if (!enemyAlive) return;
+  const dir = enemyRoot.position.clone().sub(source); dir.y = 0;
+  if (dir.lengthSq() < .001) dir.set(0, 0, 1).applyQuaternion(hero.quaternion);
+  dir.normalize();
+  const prev = enemyRoot.position.clone();
+  enemyRoot.position.addScaledVector(dir, amount);
+  resolveEnemyBuildingCollision(prev);
+  enemyRoot.position.y = getSurfaceHeightAt(enemyRoot.position.x, enemyRoot.position.z) + GROUND_EPS;
+}
+
+function interruptEnemy() {
+  enemyActionToken++;
+  enemyAttackImpactTimer = -1;
+  enemyActionLocked = false;
+  enemyEventQueue = [];
+  if (enemyCurrentAction) enemyCurrentAction.fadeOut(.05);
+  enemyCurrentAction = null;
+  enemyCurrentAnimName = '';
+}
+
+function damageEnemy(amount, source=null, knockback=0, label='') {
+  if (!enemyReady || !enemyAlive || enemyHitInvuln > 0) return false;
+  enemyHealth = Math.max(0, enemyHealth - amount);
+  enemyHitInvuln = .10;
+  updateCombatHUD();
+
+  if (source && knockback > 0) pushEnemyFrom(source, knockback);
+  cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
+
+  if (enemyHealth <= 0) {
+    defeatEnemy();
+    return true;
+  }
+
+  interruptEnemy();
+  enemyPlayOneShot(['Jason_HR_Deflect'], 1.15, () => enemyIdle(), 'hurt');
+  if (label) showMessage(`${label} · JASON -${amount}`, 520);
+  return true;
+}
+
+function defeatEnemy() {
+  if (!enemyAlive) return;
+  enemyAlive = false;
+  enemyHealth = 0;
+  enemyAttackImpactTimer = -1;
+  updateCombatHUD();
+  interruptEnemy();
+  const deathCfg = enemySlot('death', {clip:'Jason_HR_Flyback_B_Enter', speed:.86, fade:.04, loop:false});
+  const clip = enemyFindClip([deathCfg.clip, 'Jason_HR_Flyback_B_Enter']);
+  if (clip && enemyMixer) {
+    const action = enemyPlayClip(clip, deathCfg.fade, true, deathCfg.speed);
+    if (action) action.clampWhenFinished = true;
+    enemyActionLocked = true;
+  }
+  enemyMarker.material.opacity = .18;
+  showMessage('JASON DERROTADO!', 2200);
+}
+
+function resetEnemy() {
+  enemyRespawnSerial++;
+  enemyHealth = enemyMaxHealth;
+  enemyAlive = true;
+  enemyHitInvuln = 0;
+  enemyAttackCooldown = .75;
+  enemyAttackImpactTimer = -1;
+  enemyActionToken++;
+  enemyActionLocked = false;
+  enemyEventQueue = [];
+  enemyRoot.position.copy(ENEMY_SPAWN);
+  enemyRoot.rotation.set(0,0,0);
+  enemyMarker.material.opacity = .78;
+  if (enemyMixer) enemyMixer.stopAllAction();
+  enemyCurrentAction = null;
+  enemyCurrentAnimName = '';
+  enemyIdle();
+  updateCombatHUD();
+}
+
+function damagePlayer(amount, fromDirection) {
+  if (playerDead || playerInvuln > 0) return;
+  playerHealth = Math.max(0, playerHealth - amount);
+  playerInvuln = .62;
+  updateCombatHUD();
+  cameraShake = Math.max(cameraShake, .62);
+  if (fromDirection) {
+    const push = fromDirection.clone(); push.y = 0;
+    if (push.lengthSq() > .001) {
+      push.normalize();
+      velocity.addScaledVector(push, 11);
+      velocity.y = Math.max(velocity.y, 3.5);
+    }
+  }
+  showMessage(`JASON ACERTOU! · -${amount} HP`, 620);
+  if (playerHealth <= 0) {
+    playerDead = true;
+    actionLocked = true;
+    velocity.set(0,0,0);
+    showMessage('SUPERMAN DERROTADO · reiniciando...', 1800);
+    const serial = ++enemyRespawnSerial;
+    setTimeout(() => {
+      if (playerDead && serial === enemyRespawnSerial) resetGame();
+    }, 1700);
+  }
+}
+
+function beginEnemyAttack(kind='combo') {
+  if (!enemyAlive || enemyActionLocked || enemyAttackCooldown > 0 || playerDead) return;
+  let candidates, timeScale, impact, damage, range, cooldown, slotName;
+  if (kind === 'dash') {
+    slotName = 'specialAttack';
+    candidates = ['Jason_Attack_Dash_Shoulder_Bash'];
+    timeScale = 1.08; impact = .46; damage = 20; range = 4.4; cooldown = 2.0;
+  } else {
+    const roll = Math.floor(Math.random() * 3);
+    slotName = ['attack1','attack2','attack3'][roll];
+    candidates = [[ 'Jason_Attack_Combo_01' ], [ 'Jason_Attack_Combo_02' ], [ 'Jason_Attack_Combo_03' ]][roll];
+    timeScale = roll === 0 ? 1.22 : 1.10;
+    impact = roll === 0 ? .46 : roll === 1 ? .34 : .30;
+    damage = roll === 2 ? 18 : 14;
+    range = 3.45;
+    cooldown = 1.25 + roll * .18;
+  }
+  const started = enemyPlayOneShot(candidates, timeScale, () => enemyIdle(), slotName);
+  if (!started) return;
+  enemyAttackKind = kind;
+  const hasConfiguredEvents = (enemyAnimConfig?.slots?.[slotName]?.events || []).length > 0;
+  enemyAttackImpactTimer = hasConfiguredEvents ? -1 : impact;
+  enemyAttackDamage = damage;
+  enemyAttackRange = range;
+  enemyAttackCooldown = cooldown;
+}
+
+function triggerEnemyAttackImpact() {
+  if (!enemyAlive || playerDead) return;
+  const dir = new THREE.Vector3(0,0,1).applyQuaternion(enemyRoot.quaternion).normalize();
+  const origin = enemyRoot.position.clone().add(new THREE.Vector3(0,1.0,0)).addScaledVector(dir, 1.05);
+  const target = hero.position.clone().add(new THREE.Vector3(0,1.0,0));
+  const delta = target.sub(origin);
+  const dist = delta.length();
+  if (dist > enemyAttackRange || Math.abs(hero.position.y - enemyRoot.position.y) > 3.2) return;
+  const n = delta.normalize();
+  if (n.dot(dir) < .08) return;
+  damagePlayer(enemyAttackDamage, dir);
+}
+
+function updateEnemy(dt, time) {
+  if (!enemyReady) return;
+  enemyMarker.visible = enemyAlive;
+  enemyMarker.rotation.z += dt * .75;
+  if (!enemyAlive) return;
+
+  enemyHitInvuln = Math.max(0, enemyHitInvuln - dt);
+  enemyAttackCooldown = Math.max(0, enemyAttackCooldown - dt);
+  if (enemyAttackImpactTimer >= 0) {
+    enemyAttackImpactTimer -= dt;
+    if (enemyAttackImpactTimer <= 0) {
+      enemyAttackImpactTimer = -1;
+      triggerEnemyAttackImpact();
+    }
+  }
+  if (playerDead) { enemyIdle(); return; }
+
+  const toHero = hero.position.clone().sub(enemyRoot.position);
+  const verticalDelta = toHero.y;
+  const horizontal = new THREE.Vector3(toHero.x, 0, toHero.z);
+  const distance = horizontal.length();
+  if (distance > .001) {
+    const targetYaw = Math.atan2(horizontal.x, horizontal.z);
+    enemyRoot.rotation.y = lerpAngle(enemyRoot.rotation.y, targetYaw, 1 - Math.exp(-6.5 * dt));
+  }
+
+  // Jason is a ground boss. He follows Superman across streets but waits below
+  // when the player climbs well above melee height.
+  const canReachVertically = Math.abs(verticalDelta) < 3.5;
+  if (!enemyActionLocked && canReachVertically && distance < 3.35 && enemyAttackCooldown <= 0) {
+    beginEnemyAttack('combo');
+  } else if (!enemyActionLocked && canReachVertically && distance >= 3.35 && distance < 6.2 && enemyAttackCooldown <= 0) {
+    beginEnemyAttack('dash');
+  } else if (!enemyActionLocked && distance < 110) {
+    const dir = horizontal.lengthSq() > .001 ? horizontal.normalize() : new THREE.Vector3();
+    const speed = distance > 28 ? 5.5 : 4.25;
+    const prev = enemyRoot.position.clone();
+    enemyRoot.position.addScaledVector(dir, speed * dt);
+    resolveEnemyBuildingCollision(prev);
+    enemyRoot.position.x = THREE.MathUtils.clamp(enemyRoot.position.x, -WORLD_LIMIT, WORLD_LIMIT);
+    enemyRoot.position.z = THREE.MathUtils.clamp(enemyRoot.position.z, -WORLD_LIMIT, WORLD_LIMIT);
+    enemyRoot.position.y = getSurfaceHeightAt(enemyRoot.position.x, enemyRoot.position.z) + GROUND_EPS;
+    enemyWalk(distance > 28);
+  } else if (!enemyActionLocked) {
+    enemyIdle();
+  }
+}
+
+function enemyUnderAim(maxDistance=280, radius=1.20) {
+  if (!enemyReady || !enemyAlive) return false;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const center = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.25, 0));
+  const toCenter = center.sub(camera.position);
+  const t = toCenter.dot(dir);
+  if (t < 0 || t > maxDistance) return false;
+  const closest = camera.position.clone().addScaledVector(dir, t);
+  return closest.distanceTo(center) <= radius;
+}
+
+function triggerNormalPunchImpact() {
+  if (!enemyAlive) return;
+  const dir = new THREE.Vector3(0,0,1).applyQuaternion(hero.quaternion).normalize();
+  const origin = hero.position.clone().add(new THREE.Vector3(0,1.05,0)).addScaledVector(dir, .95);
+  const enemyCenter = enemyRoot.position.clone().add(new THREE.Vector3(0,1.2,0));
+  const delta = enemyCenter.sub(origin);
+  const dist = delta.length();
+  if (dist > 3.25 || Math.abs(hero.position.y - enemyRoot.position.y) > 2.8) return;
+  if (delta.normalize().dot(dir) < .05) return;
+  damageEnemy(22, origin, 1.25, 'SOCO');
+}
+
+// ---------------------------------------------------------------------------
+// OBJECTIVE / SKY
+// ---------------------------------------------------------------------------
+const rings = [];
+const ringPositions = [
+  [0,70,35], [55,95,-45], [115,130,-120], [35,185,-230], [-90,135,-300],
+  [-165,100,-210], [-150,65,-80], [-80,115,30], [15,150,110], [125,90,85],
+  [220,120,15], [210,180,-125]
+];
+const ringMat = new THREE.MeshStandardMaterial({ color: 0x3be8ff, emissive: 0x0b9fc0, emissiveIntensity: 4, roughness: .25, metalness: .15 });
+for (const p of ringPositions) {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(6, .75, 10, 28), ringMat.clone());
+  ring.position.set(...p);
+  ring.rotation.y = rng()*Math.PI;
+  ring.rotation.x = (rng()-.5)*.7;
+  ring.userData.collected = false;
+  scene.add(ring); rings.push(ring);
+}
+document.querySelector('#total').textContent = rings.length;
+
+const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, transparent:true, opacity:.72, depthWrite:false });
+for (let i=0;i<32;i++) {
+  const c = new THREE.Group();
+  for (let j=0;j<4;j++) {
+    const s = new THREE.Mesh(new THREE.SphereGeometry(8+rng()*14, 10, 8), cloudMat);
+    s.position.set((j-1.5)*11,(rng()-.5)*4,(rng()-.5)*8); c.add(s);
+  }
+  c.position.set((rng()-.5)*900, 130+rng()*180, (rng()-.5)*900);
+  scene.add(c);
+}
+
+// ---------------------------------------------------------------------------
+// INPUT / GAMEPLAY
+// ---------------------------------------------------------------------------
+const keys = Object.create(null);
+let yaw = Math.PI;
+let pitch = -.13;
+let velocity = new THREE.Vector3();
+let score = 0;
+let beamLife = 0;
+const clock = new THREE.Clock();
+const temp = new THREE.Vector3();
+const forward = new THREE.Vector3();
+const right = new THREE.Vector3();
+const flightForward = new THREE.Vector3();
+const cameraBack = new THREE.Vector3();
+const up = new THREE.Vector3(0,1,0);
+
+function getAimDirection(out = new THREE.Vector3()) {
+  const cp = Math.cos(pitch);
+  return out.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp).normalize();
+}
+
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+  if (e.repeat && ['KeyF', 'KeyE', 'KeyX', 'KeyQ', 'KeyR'].includes(e.code)) return;
+
+  if (e.code === 'KeyR') resetGame();
+  if (e.code === 'KeyQ') fireBeam();
+  if (e.code === 'KeyE') {
+    if (e.shiftKey || keys.ShiftLeft || keys.ShiftRight) superPunch();
+    else punch();
+  }
+  if (e.code === 'KeyX') superPunch();
+  if (e.code === 'KeyF') toggleFlight();
+});
+addEventListener('keyup', e => keys[e.code] = false);
+
+renderer.domElement.addEventListener('click', () => {
+  if (document.querySelector('#help').classList.contains('hidden')) renderer.domElement.requestPointerLock();
+});
+document.querySelector('#play').addEventListener('click', () => {
+  document.querySelector('#help').classList.add('hidden');
+  renderer.domElement.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', () => {
+  if (!document.pointerLockElement && document.querySelector('#help').classList.contains('hidden')) showMessage('Clique na tela para continuar', 1200);
+});
+document.addEventListener('mousemove', e => {
+  if (!document.pointerLockElement) return;
+  yaw -= e.movementX * .0025;
+  pitch -= e.movementY * .0020;
+  pitch = THREE.MathUtils.clamp(pitch, -1.05, .8);
+});
+
+const beamGeoL = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0,0,-1)]);
+const beamGeoR = beamGeoL.clone();
+const beamMatL = new THREE.LineBasicMaterial({ color:0xff173f, transparent:true, opacity:0 });
+const beamMatR = beamMatL.clone();
+const beamL = new THREE.Line(beamGeoL, beamMatL);
+const beamR = new THREE.Line(beamGeoR, beamMatR);
+scene.add(beamL, beamR);
+
+function updateHeatVisionGeometry() {
+  camera.getWorldDirection(temp);
+  const aimPoint = camera.position.clone().add(temp.clone().multiplyScalar(280));
+
+  // Approximate eye sockets in the hero root. Their world-space separation
+  // follows the character orientation, while the endpoint follows the reticle.
+  const leftEye = hero.localToWorld(new THREE.Vector3(-.035, 1.79, .08));
+  const rightEye = hero.localToWorld(new THREE.Vector3(.035, 1.79, .08));
+  beamL.geometry.setFromPoints([leftEye, aimPoint]);
+  beamR.geometry.setFromPoints([rightEye, aimPoint]);
+}
+
+function fireBeam() {
+  if (beamLife > 0 || actionLocked) return;
+  const started = playOneShot(['C003_Laser_Air'], 'VISÃO DE CALOR!', 1.05, null, 'heatVision');
+  updateHeatVisionGeometry();
+  beamMatL.opacity = beamMatR.opacity = 1;
+  beamLife = .42;
+  if (started && !(heroAnimConfig?.slots?.heatVision?.events || []).length && enemyUnderAim()) {
+    damageEnemy(18, hero.position, .45, 'VISÃO DE CALOR');
+  }
+}
+
+function punch() {
+  const started = playOneShot(['C003_Punch_01', 'C003_N_Attack_01'], 'SOCO!', 1.05, null, 'punch');
+  if (started && !(heroAnimConfig?.slots?.punch?.events || []).length) normalPunchImpactTimer = .19;
+}
+
+function superPunch() {
+  if (actionLocked || superPunchImpactTimer >= 0) return;
+  const started = playOneShot(['C003_N_Attack_01', 'C003_Punch_01'], 'SUPER SOCO!', 1.16, null, 'superPunch');
+  if (started && !(heroAnimConfig?.slots?.superPunch?.events || []).length) superPunchImpactTimer = .22;
+}
+
+function getSurfaceHeightAt(x, z) {
+  let surface = 0;
+  for (const box of buildingColliders) {
+    if (x > box.min.x + .45 && x < box.max.x - .45 &&
+        z > box.min.z + .45 && z < box.max.z - .45) {
+      surface = Math.max(surface, box.max.y);
+    }
+  }
+  return surface;
+}
+
+function clipDuration(candidates, timeScale=1, fallback=.9, slotName='') {
+  const cfg = slotName ? heroSlot(slotName, {clip:candidates[0],speed:timeScale}) : null;
+  const clip = findClip([cfg?.clip, ...candidates].filter(Boolean));
+  const speed = cfg?.speed ?? timeScale;
+  if (!clip || !Number.isFinite(clip.duration) || clip.duration <= 0) return fallback;
+  return THREE.MathUtils.clamp(clip.duration / Math.max(.01, speed), .5, 2.2);
+}
+
+function startTakeoff() {
+  if (actionLocked) return;
+  const duration = clipDuration(['C003_Flying_Intro', 'C003_Jump_01'], 1.05, .95, 'takeoff');
+  if (!flightMachine.requestTakeoff(duration)) return;
+
+  const surface = getSurfaceHeightAt(hero.position.x, hero.position.z);
+  hero.position.y = Math.max(hero.position.y, surface + GROUND_EPS);
+  transitionStartY = hero.position.y;
+  transitionTargetY = surface + TAKEOFF_CLEARANCE;
+  velocity.set(0, 0, 0);
+
+  playOneShot(['C003_Flying_Intro', 'C003_Jump_01'], 'DECOLAGEM!', 1.05, null, 'takeoff');
+}
+
+function requestLanding() {
+  if (flightMachine.requestLanding()) {
+    showMessage('PARANDO VOO · POUSO AUTOMÁTICO', 700);
+  }
+}
+
+function startLandingSequence(surfaceY) {
+  const duration = clipDuration(['C003_Land'], 1.0, .8, 'land');
+  if (!flightMachine.touchdown(duration)) return;
+
+  landingSurfaceY = surfaceY;
+  transitionStartY = hero.position.y;
+  transitionTargetY = surfaceY + GROUND_EPS;
+  velocity.set(0, 0, 0);
+
+  playOneShot(['C003_Land'], 'POUSANDO', 1.0, null, 'land');
+}
+
+function toggleFlight() {
+  if (flightMachine.state === 'grounded') startTakeoff();
+  else if (flightMachine.state === 'flying') requestLanding();
+  else if (flightMachine.state === 'landingApproach') {
+    if (flightMachine.cancelLanding()) {
+      showMessage('VOO RETOMADO', 450);
+    }
+  }
+}
+
+function resetGame() {
+  hero.position.set(0, GROUND_EPS, 130);
+  hero.rotation.set(0, 0, 0);
+  velocity.set(0,0,0); score=0;
+  flightMachine.forceGrounded();
+  superPunchImpactTimer = -1;
+  normalPunchImpactTimer = -1;
+  cameraShake = 0;
+  actionLocked = false;
+  heroEventQueue = [];
+  playerHealth = playerMaxHealth;
+  playerInvuln = 0;
+  playerDead = false;
+  resetEnemy();
+  updateCombatHUD();
+
+  if (mixer) {
+    mixer.stopAllAction();
+    for (const listener of activeListeners) mixer.removeEventListener('finished', listener);
+    activeListeners.clear();
+  }
+  currentAction = null;
+  currentAnimName = '';
+
+  for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(1); }
+  document.querySelector('#score').textContent = 0;
+  showMessage('Missão reiniciada', 850);
+}
+
+let msgTimer;
+function showMessage(text, ms=900) {
+  const el = document.querySelector('#message');
+  el.textContent = text; el.classList.add('show');
+  clearTimeout(msgTimer); msgTimer = setTimeout(()=>el.classList.remove('show'), ms);
+}
+
+function triggerSuperPunchImpact(applyEnemyDamage=true) {
+  const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(hero.quaternion).normalize();
+  const origin = hero.position.clone().add(new THREE.Vector3(0, 1.15, 0)).addScaledVector(dir, 1.45);
+
+  const wave = new THREE.Mesh(
+    new THREE.RingGeometry(.28, .72, 40),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff1b8,
+      transparent: true,
+      opacity: .95,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  wave.position.copy(origin);
+  wave.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+  scene.add(wave);
+  impactEffects.push({ object: wave, life: .42, maxLife: .42 });
+
+  const pushActors = [...trafficActors, ...npcActors];
+  for (const actor of pushActors) {
+    const delta = actor.object.position.clone().sub(origin);
+    const distance = delta.length();
+    if (distance < .01 || distance > 15) continue;
+    const n = delta.clone().normalize();
+    if (n.dot(dir) < -.15) continue;
+    const strength = (1 - distance / 15) * 9.5;
+    actor.object.position.addScaledVector(n, strength);
+  }
+
+  if (applyEnemyDamage && enemyAlive) {
+    const enemyCenter = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+    const delta = enemyCenter.sub(origin);
+    const distance = delta.length();
+    if (distance <= 8.0 && distance > .01 && delta.normalize().dot(dir) > -.05 && Math.abs(hero.position.y - enemyRoot.position.y) < 4.0) {
+      damageEnemy(48, origin, 5.5, 'SUPER SOCO');
+    }
+  }
+
+  cameraShake = Math.max(cameraShake, .62);
+}
+
+function updateImpactEffects(dt) {
+  for (let i = impactEffects.length - 1; i >= 0; i--) {
+    const fx = impactEffects[i];
+    fx.life -= dt;
+    const t = 1 - Math.max(0, fx.life) / fx.maxLife;
+    fx.object.scale.setScalar(1 + t * 8.5);
+    fx.object.material.opacity = Math.max(0, 1 - t);
+    if (fx.life <= 0) {
+      scene.remove(fx.object);
+      fx.object.geometry.dispose();
+      fx.object.material.dispose();
+      impactEffects.splice(i, 1);
+    }
+  }
+}
+
+function resolveHeroBuildingCollision(previousPosition) {
+  // Feet are at hero.position.y.  Use a compact capsule-like sample point at
+  // torso height; flying above a rooftop remains unrestricted.
+  const center = new THREE.Vector3(hero.position.x, hero.position.y + 1.0, hero.position.z);
+  for (const box of buildingColliders) {
+    if (center.y < box.min.y - .2 || center.y > box.max.y + .2) continue;
+    if (center.x > box.min.x - .45 && center.x < box.max.x + .45 &&
+        center.z > box.min.z - .45 && center.z < box.max.z + .45) {
+      hero.position.x = previousPosition.x;
+      hero.position.z = previousPosition.z;
+      velocity.x *= -.08;
+      velocity.z *= -.08;
+      return;
+    }
+  }
+}
+
+function updateHero(dt, time) {
+  const boosted = keys.ShiftLeft || keys.ShiftRight;
+  const modeEl = document.querySelector('#mode');
+
+  // V9 flight control: the reticle/camera pitch defines the full 3D forward
+  // vector. Looking up/down therefore changes altitude naturally; there are no
+  // dedicated ascend/descend keys anymore.
+  getAimDirection(flightForward);
+  forward.set(flightForward.x, 0, flightForward.z);
+  if (forward.lengthSq() < .0001) forward.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+  forward.normalize();
+  right.crossVectors(forward, up).normalize();
+
+  const stateEvent = flightMachine.update(dt);
+  if (stateEvent === 'flyingStarted') {
+    hero.position.y = Math.max(hero.position.y, transitionTargetY);
+    velocity.copy(flightForward).multiplyScalar(2.4);
+  } else if (stateEvent === 'grounded') {
+    hero.position.y = transitionTargetY;
+    velocity.set(0, 0, 0);
+    showMessage('VOO ENCERRADO', 650);
+  }
+
+  // Native takeoff/landing clips drive the visual while world-space movement
+  // moves the character cleanly between ground and flight states.
+  if (flightMachine.busy) {
+    const t = flightMachine.progress;
+    const smooth = t * t * (3 - 2 * t);
+    hero.position.y = THREE.MathUtils.lerp(transitionStartY, transitionTargetY, smooth);
+    velocity.set(0, 0, 0);
+  } else if (flightMachine.state === 'grounded') {
+    const wish = new THREE.Vector3();
+    if (keys.KeyW) wish.add(forward);
+    if (keys.KeyS) wish.sub(forward);
+    if (keys.KeyD) wish.add(right);
+    if (keys.KeyA) wish.sub(right);
+    wish.y = 0;
+
+    const accel = boosted ? 35 : 25;
+    const maxSpeed = boosted ? 14 : 8.5;
+    if (wish.lengthSq() > 0) {
+      wish.normalize();
+      velocity.addScaledVector(wish, accel * dt);
+    }
+    velocity.y = 0;
+    velocity.multiplyScalar(Math.exp(-5.0 * dt));
+    if (velocity.length() > maxSpeed) velocity.setLength(maxSpeed);
+
+    const previousPosition = hero.position.clone();
+    hero.position.addScaledVector(velocity, dt);
+    resolveHeroBuildingCollision(previousPosition);
+
+    const surface = getSurfaceHeightAt(hero.position.x, hero.position.z);
+    const currentFootY = hero.position.y - GROUND_EPS;
+    if (currentFootY - surface > 1.25) {
+      // Walking off a roof automatically catches the character in flight.
+      flightMachine.state = 'flying';
+      velocity.y = -1.5;
+      showMessage('VOO ATIVO', 450);
+    } else {
+      hero.position.y = surface + GROUND_EPS;
+    }
+  } else {
+    const landing = flightMachine.state === 'landingApproach';
+    const accel = boosted ? 86 : 44;
+    const maxSpeed = boosted ? 125 : 55;
+    const wish = new THREE.Vector3();
+
+    if (!landing) {
+      // W/S move exactly along/opposite the reticle, including its Y component.
+      // A/D strafe on the camera's horizontal right axis, so all altitude
+      // changes come from where the player is aiming rather than extra buttons.
+      if (keys.KeyW) wish.add(flightForward);
+      if (keys.KeyS) wish.sub(flightForward);
+      if (keys.KeyD) wish.add(right);
+      if (keys.KeyA) wish.sub(right);
+      if (wish.lengthSq() > 0) {
+        wish.normalize();
+        velocity.addScaledVector(wish, accel * dt);
+      }
+      velocity.multiplyScalar(Math.exp(-(boosted ? .92 : 1.7) * dt));
+      if (velocity.length() > maxSpeed) velocity.setLength(maxSpeed);
+    } else {
+      // F stops flight: horizontal momentum bleeds off and the hero descends
+      // automatically toward whichever walkable surface is directly below.
+      const surface = getSurfaceHeightAt(hero.position.x, hero.position.z);
+      const clearance = Math.max(0, hero.position.y - surface);
+      const descentSpeed = THREE.MathUtils.clamp(7 + clearance * .12, 8, 28);
+      velocity.x *= Math.exp(-3.4 * dt);
+      velocity.z *= Math.exp(-3.4 * dt);
+      velocity.y = THREE.MathUtils.lerp(velocity.y, -descentSpeed, 1 - Math.exp(-4.5 * dt));
+    }
+
+    const previousPosition = hero.position.clone();
+    hero.position.addScaledVector(velocity, dt);
+    resolveHeroBuildingCollision(previousPosition);
+
+    const surface = getSurfaceHeightAt(hero.position.x, hero.position.z);
+    const clearance = hero.position.y - surface;
+    if (landing && clearance <= 3.05) {
+      hero.position.y = Math.max(hero.position.y, surface + .8);
+      startLandingSequence(surface);
+    } else if (hero.position.y <= surface + GROUND_EPS) {
+      hero.position.y = surface + GROUND_EPS;
+      startLandingSequence(surface);
+    }
+  }
+
+  hero.position.x = THREE.MathUtils.clamp(hero.position.x, -WORLD_LIMIT, WORLD_LIMIT);
+  hero.position.z = THREE.MathUtils.clamp(hero.position.z, -WORLD_LIMIT, WORLD_LIMIT);
+  hero.position.y = THREE.MathUtils.clamp(hero.position.y, GROUND_EPS, 620);
+
+  if (flightMachine.state === 'flying' || flightMachine.state === 'landingApproach') {
+    // Face the reticle rather than only the horizontal velocity. This is what
+    // makes steep climbs/dives feel like true six-direction superhero flight.
+    const targetYaw = Math.atan2(flightForward.x, flightForward.z);
+    const targetPitch = -Math.asin(THREE.MathUtils.clamp(flightForward.y, -.98, .98));
+    hero.rotation.y = lerpAngle(hero.rotation.y, targetYaw, 1 - Math.exp(-8 * dt));
+    hero.rotation.x = THREE.MathUtils.lerp(hero.rotation.x, targetPitch, 1 - Math.exp(-7 * dt));
+    const bank = (keys.KeyD ? -.20 : 0) + (keys.KeyA ? .20 : 0);
+    hero.rotation.z = THREE.MathUtils.lerp(hero.rotation.z, bank, 1 - Math.exp(-7 * dt));
+  } else {
+    const horizontal = new THREE.Vector3(velocity.x, 0, velocity.z);
+    if (horizontal.lengthSq() > .25) {
+      const targetYaw = Math.atan2(horizontal.x, horizontal.z);
+      hero.rotation.y = lerpAngle(hero.rotation.y, targetYaw, 1 - Math.exp(-7 * dt));
+    }
+    hero.rotation.z = THREE.MathUtils.lerp(hero.rotation.z, 0, 1 - Math.exp(-8 * dt));
+    hero.rotation.x = THREE.MathUtils.lerp(hero.rotation.x, 0, 1 - Math.exp(-8 * dt));
+  }
+
+  updateAnimation(velocity.length(), boosted);
+
+  for (const ring of rings) {
+    if (ring.userData.collected) continue;
+    ring.rotation.z += dt * 1.3; ring.rotation.y += dt * .35;
+    ring.scale.setScalar(1 + Math.sin(time * 4 + ring.position.x) * .05);
+    if (hero.position.distanceTo(ring.position) < 7.5) {
+      ring.userData.collected = true; ring.visible = false; score++;
+      document.querySelector('#score').textContent = score;
+      showMessage(score === rings.length ? 'MISSÃO COMPLETA!' : `Anel ${score}/${rings.length}`, score === rings.length ? 2200 : 700);
+    }
+  }
+
+  const modeLabel = {
+    grounded: 'NO SOLO',
+    takingOff: 'INICIANDO VOO',
+    flying: 'VOO ATIVO · MIRA 3D',
+    landingApproach: 'ENCERRANDO VOO',
+    landing: 'POUSANDO'
+  }[flightMachine.state] || 'VOO';
+  if (modeEl) modeEl.textContent = `Modo: ${modeLabel}`;
+  document.querySelector('#speed').textContent = `Velocidade: ${Math.round(velocity.length() * 3.6)} km/h${boosted && flightMachine.state === 'flying' ? ' — BOOST' : ''}`;
+}
+
+function updateCamera(dt) {
+  // The center reticle is now a real flight direction. The camera looks far
+  // ahead along the same yaw/pitch vector used by movement, while remaining a
+  // comfortable third-person distance behind Superman.
+  const aim = getAimDirection(temp);
+  const target = hero.position.clone().add(new THREE.Vector3(0, 1.08, 0));
+  const dist = (keys.ShiftLeft || keys.ShiftRight) ? 11.2 : 7.8;
+  cameraBack.copy(aim);
+  cameraBack.y *= .34; // keep the camera usable at very steep climb/dive angles
+  if (cameraBack.lengthSq() < .001) cameraBack.set(0,0,1);
+  cameraBack.normalize();
+
+  const cameraRight = new THREE.Vector3().crossVectors(aim, up);
+  if (cameraRight.lengthSq() < .001) cameraRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
+  cameraRight.normalize();
+  let desired = target.clone()
+    .addScaledVector(cameraBack, -dist)
+    .addScaledVector(up, flightMachine.state === 'grounded' ? 1.7 : 1.35)
+    .addScaledVector(cameraRight, .32);
+
+  const rayVector = desired.clone().sub(target);
+  const wantedDistance = rayVector.length();
+  if (wantedDistance > .001 && buildingColliders.length) {
+    const ray = new THREE.Ray(target, rayVector.clone().normalize());
+    let nearest = wantedDistance;
+    const hit = new THREE.Vector3();
+    for (const box of buildingColliders) {
+      const point = ray.intersectBox(box, hit);
+      if (!point) continue;
+      const d = point.distanceTo(target);
+      if (d > .25 && d < nearest) nearest = d;
+    }
+    if (nearest < wantedDistance) {
+      desired = target.clone().add(ray.direction.clone().multiplyScalar(Math.max(.8, nearest - .5)));
+    }
+  }
+
+  desired.y = Math.max(desired.y, .55);
+  camera.position.lerp(desired, 1 - Math.exp(-10 * dt));
+  if (cameraShake > .001) {
+    camera.position.x += (Math.random() - .5) * cameraShake;
+    camera.position.y += (Math.random() - .5) * cameraShake * .65;
+    camera.position.z += (Math.random() - .5) * cameraShake;
+    cameraShake *= Math.exp(-10 * dt);
+  }
+
+  const lookPoint = target.clone().addScaledVector(aim, 42);
+  camera.lookAt(lookPoint);
+  const targetFov = (keys.ShiftLeft || keys.ShiftRight) && velocity.length() > 50 ? 79 : (flightMachine.state === 'flying' ? 66 : 62);
+  camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, 1 - Math.exp(-5 * dt));
+  camera.updateProjectionMatrix();
+}
+
+function animate() {
+  const dt = Math.min(clock.getDelta(), .033);
+  const time = clock.elapsedTime;
+  playerInvuln = Math.max(0, playerInvuln - dt);
+  updateHero(dt,time);
+  updateEnemy(dt,time);
+  updateCityLife(dt,time);
+  updateCamera(dt);
+  if (mixer) mixer.update(dt);
+  if (enemyMixer) enemyMixer.update(dt);
+  updateHeroEvents(dt);
+  updateEnemyEvents(dt);
+  if (beamLife > 0) {
+    beamLife -= dt;
+    updateHeatVisionGeometry();
+    const opacity = Math.max(0, Math.min(1, beamLife / .16));
+    beamMatL.opacity = beamMatR.opacity = opacity;
+  }
+  if (normalPunchImpactTimer >= 0) {
+    normalPunchImpactTimer -= dt;
+    if (normalPunchImpactTimer <= 0) {
+      normalPunchImpactTimer = -1;
+      triggerNormalPunchImpact();
+    }
+  }
+  if (superPunchImpactTimer >= 0) {
+    superPunchImpactTimer -= dt;
+    if (superPunchImpactTimer <= 0) {
+      superPunchImpactTimer = -1;
+      triggerSuperPunchImpact();
+    }
+  }
+  updateImpactEffects(dt);
+  renderer.render(scene,camera);
+  requestAnimationFrame(animate);
+}
+animate();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,1.6));
+});
+
+function lerpAngle(a,b,t) {
+  let d = (b-a+Math.PI)%(Math.PI*2)-Math.PI;
+  if (d < -Math.PI) d += Math.PI*2;
+  return a+d*t;
+}
+function mulberry32(a) {
+  return function() {
+    let t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}

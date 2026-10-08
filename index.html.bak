@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Superman Fan Prototype — Three.js</title>
+  <link rel="stylesheet" href="./style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    <div class="title">SUPERMAN // THREE.JS</div>
+    <div id="mission">Objetivo: derrote Jason · anéis de energia — <b id="score">0</b>/<b id="total">0</b></div>
+    <div id="player-health">Vida Superman: <b id="player-health-value">100</b>%</div>
+    <div id="speed">Velocidade: 0 km/h</div>
+    <div id="mode">Modo: NO SOLO</div>
+    <div id="asset-status">Carregando cidade, Superman e Jason locais...</div>
+    <div id="config-status">V9 · cidade por distritos · voo 3D guiado pela mira</div>
+  </div>
+
+  <div id="boss-hud">
+    <div class="boss-title"><span>JASON</span><span id="boss-health-text">180 / 180</span></div>
+    <div class="bar"><div id="boss-health-fill"></div></div>
+  </div>
+
+  <div id="crosshair">+</div>
+
+  <div id="help" class="panel">
+    <h1>Superman — Fan Prototype</h1>
+    <p>Protótipo de fã em Three.js com Superman e Jason | MultiVersus, cidade CC0, combate, tráfego e NPCs.</p>
+    <div class="keys">
+      <span><kbd>W A S D</kbd> mover / manobrar</span>
+      <span><kbd>Mouse</kbd> mirar direção do voo</span>
+      <span><kbd>F</kbd> começar / parar de voar</span>
+      <span><kbd>W</kbd> no voo: seguir a mira em 3D</span>
+      <span><kbd>S</kbd> no voo: recuar da mira</span>
+      <span><kbd>Shift</kbd> supervelocidade</span>
+      <span><kbd>E</kbd> soco (dano no Jason)</span>
+      <span><kbd>Shift + E</kbd> ou <kbd>X</kbd> SUPER SOCO</span>
+      <span><kbd>Q</kbd> visão de calor (mire no Jason)</span>
+      <span><kbd>R</kbd> reiniciar</span>
+      <span><kbd>Esc</kbd> liberar mouse</span>
+    </div>
+    <a class="configurator-link" href="./animation-configurator.html">CONFIGURADOR DE ANIMAÇÕES 2.0</a>
+    <button id="play">JOGAR</button>
+    <small>Clique na tela para capturar o mouse novamente.</small>
+  </div>
+
+  <div id="message"></div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

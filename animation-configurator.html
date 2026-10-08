@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <title>Configurador de Animações 2.0 — Sky Guardian</title>
+  <link rel="stylesheet" href="./animation-configurator.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">SKY GUARDIAN TOOL · V8</div>
+      <h1>Configurador de Animações 2.0</h1>
+      <p>Clips, orientação, bones, eventos, hitboxes e JSON que o jogo consegue carregar automaticamente.</p>
+    </div>
+    <a class="game-link" href="./index.html">← Voltar ao jogo</a>
+  </header>
+
+  <main class="layout">
+    <section class="viewer-panel">
+      <div class="viewer-toolbar">
+        <label>Personagem
+          <select id="character-select">
+            <option value="superman">Superman</option>
+            <option value="jason">Jason</option>
+          </select>
+        </label>
+        <label class="check compact"><input id="show-skeleton" type="checkbox" /> Mostrar esqueleto</label>
+        <span id="load-status" class="status">Carregando...</span>
+      </div>
+      <div id="viewer" aria-label="Prévia 3D do personagem"></div>
+      <div class="timeline-wrap">
+        <div class="timeline">
+          <button id="play-pause" type="button">Pausar</button>
+          <button id="restart" type="button">Reiniciar</button>
+          <div class="scrub-wrap">
+            <input id="scrub" type="range" min="0" max="1" step="0.001" value="0" aria-label="Linha do tempo da animação" />
+            <div id="timeline-markers" class="timeline-markers" aria-hidden="true"></div>
+          </div>
+          <span id="time-label">0.00 / 0.00 s</span>
+        </div>
+        <div class="viewer-help">Arraste: girar câmera · roda: zoom · clique em um marcador para ir ao evento.</div>
+      </div>
+    </section>
+
+    <aside class="controls-panel">
+      <section class="card">
+        <h2>1. Clip para testar</h2>
+        <label>Buscar
+          <input id="clip-search" type="search" placeholder="Ex.: Flying, Punch, Walk..." />
+        </label>
+        <label>Animação
+          <select id="clip-select" size="7"></select>
+        </label>
+        <div class="clip-meta"><span id="clip-count">0 clips</span><span id="clip-duration">0.00 s</span></div>
+      </section>
+
+      <section class="card grid-two">
+        <h2>2. Reprodução</h2>
+        <label>Velocidade<input id="speed" type="number" min="0.05" max="4" step="0.05" value="1" /></label>
+        <label>Fade (s)<input id="fade" type="number" min="0" max="3" step="0.01" value="0.12" /></label>
+        <label class="check"><input id="loop" type="checkbox" checked /> Loop</label>
+        <label class="check"><input id="remove-root" type="checkbox" /> Remover Root.position</label>
+      </section>
+
+      <section class="card">
+        <h2>3. Orientação do modelo</h2>
+        <div class="grid-three">
+          <label>Rot X°<input id="rot-x" type="number" step="1" value="0" /></label>
+          <label>Rot Y°<input id="rot-y" type="number" step="1" value="-90" /></label>
+          <label>Rot Z°<input id="rot-z" type="number" step="1" value="0" /></label>
+        </div>
+        <div class="grid-three checks">
+          <label class="check"><input id="mirror-x" type="checkbox" /> Espelhar X</label>
+          <label class="check"><input id="mirror-y" type="checkbox" /> Espelhar Y</label>
+          <label class="check"><input id="mirror-z" type="checkbox" /> Espelhar Z</label>
+        </div>
+        <label>Altura de referência (m)<input id="height" type="number" min="0.2" max="10" step="0.01" value="2.05" /></label>
+        <button id="apply-transform" type="button">Aplicar orientação</button>
+      </section>
+
+      <section class="card">
+        <h2>4. Ação do jogo</h2>
+        <label>Slot
+          <select id="slot-select"></select>
+        </label>
+        <label>Observação<input id="slot-note" type="text" placeholder="Ex.: usar somente durante voo rápido" /></label>
+        <button id="save-slot" type="button" class="primary">Salvar clip neste slot</button>
+        <div id="mapping-list" class="mapping-list"></div>
+      </section>
+
+      <section class="card">
+        <h2>5. Eventos na timeline</h2>
+        <div class="event-time-row">
+          <label>Tempo (s)<input id="event-time" type="number" min="0" step="0.01" value="0" /></label>
+          <button id="use-current-time" type="button">Usar tempo atual</button>
+        </div>
+        <div class="grid-two plain-grid">
+          <label>Tipo
+            <select id="event-type">
+              <option value="damage">damage</option>
+              <option value="heatVision">heatVision</option>
+              <option value="cameraShake">cameraShake</option>
+              <option value="effect">effect</option>
+              <option value="note">note</option>
+            </select>
+          </label>
+          <label>Hitbox<select id="event-hitbox"><option value="">(nenhuma)</option></select></label>
+          <label>Dano<input id="event-damage" type="number" min="0" step="1" value="20" /></label>
+          <label>Knockback<input id="event-knockback" type="number" min="0" step="0.1" value="1" /></label>
+          <label>Raio (m)<input id="event-radius" type="number" min="0.05" step="0.05" value="1.5" /></label>
+          <label>Shake<input id="event-strength" type="number" min="0" step="0.05" value="0.5" /></label>
+        </div>
+        <label>Rótulo<input id="event-label" type="text" placeholder="Ex.: SUPER SOCO" /></label>
+        <div class="actions"><button id="add-event" type="button" class="primary">Adicionar evento</button></div>
+        <div id="event-list" class="event-list"></div>
+      </section>
+
+      <section class="card">
+        <h2>6. Bones e hitboxes</h2>
+        <label>Buscar bone<input id="bone-search" type="search" placeholder="Ex.: wrist, head, eye..." /></label>
+        <label>Bone<select id="bone-select" size="6"></select></label>
+        <div class="grid-two plain-grid">
+          <label>Nome<input id="hitbox-name" type="text" placeholder="Punho direito" /></label>
+          <label>Finalidade
+            <select id="hitbox-purpose"><option value="attack">attack</option><option value="hurtbox">hurtbox</option><option value="sensor">sensor</option></select>
+          </label>
+          <label>Forma<select id="hitbox-shape"><option value="sphere">sphere</option><option value="box">box</option></select></label>
+          <label>Raio<input id="hitbox-radius" type="number" min="0.02" step="0.02" value="0.35" /></label>
+        </div>
+        <div class="subheading">Tamanho da caixa (m)</div>
+        <div class="grid-three">
+          <label>X<input id="hitbox-size-x" type="number" min="0.02" step="0.05" value="0.7" /></label>
+          <label>Y<input id="hitbox-size-y" type="number" min="0.02" step="0.05" value="0.7" /></label>
+          <label>Z<input id="hitbox-size-z" type="number" min="0.02" step="0.05" value="0.7" /></label>
+        </div>
+        <div class="subheading">Offset local no bone (m)</div>
+        <div class="grid-three">
+          <label>X<input id="hitbox-offset-x" type="number" step="0.02" value="0" /></label>
+          <label>Y<input id="hitbox-offset-y" type="number" step="0.02" value="0" /></label>
+          <label>Z<input id="hitbox-offset-z" type="number" step="0.02" value="0" /></label>
+        </div>
+        <div class="actions">
+          <button id="save-hitbox" type="button" class="primary">Adicionar hitbox</button>
+          <button id="cancel-hitbox-edit" type="button" hidden>Cancelar edição</button>
+        </div>
+        <div id="hitbox-list" class="hitbox-list"></div>
+      </section>
+
+      <section class="card">
+        <h2>7. Exportar / aplicar</h2>
+        <label>Notas para IA<textarea id="ai-notes" rows="4" placeholder="Explique ajustes especiais, poses, problemas de orientação etc."></textarea></label>
+        <div class="actions">
+          <button id="apply-browser" type="button" class="primary">Aplicar no jogo neste navegador</button>
+          <button id="export-json" type="button" class="primary">Exportar JSON</button>
+          <button id="export-md" type="button">Exportar resumo .md</button>
+          <label class="file-button">Importar JSON<input id="import-json" type="file" accept="application/json,.json" /></label>
+          <button id="clear-browser" type="button">Limpar config do navegador</button>
+          <button id="reset-config" type="button" class="danger">Resetar personagem</button>
+        </div>
+        <p class="hint">O jogo V8 tenta primeiro a configuração salva neste navegador. Se não existir, lê <code>config/superman-animation-config.json</code> ou <code>config/jason-animation-config.json</code>. Para compartilhar com outra IA/computador, exporte o JSON.</p>
+      </section>
+    </aside>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./animation-configurator.js"></script>
+</body>
+</html>

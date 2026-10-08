@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check main.js && node --check animation-configurator.js && node --check animation-config-runtime.js && node --check game/fire/fire-system.js && node --check game/powers/ice-breath-controller.js && node --check game/events/meteor-event.js && node --check game/events/building-fire-event.js && node --check game/events/dynamic-event-system.js && node --check game/events/emergency-presentation.js && node --check game/combat/enemy-poise.js && node --check hero-motion.js && node --check tools/add-animation-clips.mjs"
+  }
+}

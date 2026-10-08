@@ -1,0 +1,342 @@
+{
+  "schemaVersion": 2,
+  "characterId": "superman",
+  "characterLabel": "Superman",
+  "modelFile": "./assets/superman/Superman-game.glb",
+  "transform": {
+    "rotationDeg": {
+      "x": 0,
+      "y": -90,
+      "z": 0
+    },
+    "mirror": {
+      "x": false,
+      "y": false,
+      "z": false
+    },
+    "targetHeight": 2.05
+  },
+  "slots": {
+    "idle": {
+      "clip": "C003_Idle_01",
+      "speed": 1,
+      "loop": true,
+      "fade": 0.14,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "walk": {
+      "clip": "C003_Run_01",
+      "speed": 0.72,
+      "loop": true,
+      "fade": 0.14,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "run": {
+      "clip": "C003_Run_01",
+      "speed": 1,
+      "loop": true,
+      "fade": 0.12,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "jump": {
+      "clip": "C003_Jump_01",
+      "speed": 1,
+      "loop": false,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "takeoff": {
+      "clip": "C003_Flying_Intro",
+      "speed": 1.05,
+      "loop": false,
+      "fade": 0.07,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "hover": {
+      "clip": "C003_Flying_Hold",
+      "speed": 1,
+      "loop": true,
+      "fade": 0.13,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "airIdle": {
+      "clip": "C003_S08_Emote_CharacterSelect_Loop",
+      "speed": 1,
+      "loop": true,
+      "fade": 0.16,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "fly": {
+      "clip": "C003_Flying",
+      "speed": 1,
+      "loop": true,
+      "fade": 0.13,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "flyUp": {
+      "clip": "C003_Flying_U_Additive",
+      "speed": 1,
+      "loop": true,
+      "fade": 0.1,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "flyDown": {
+      "clip": "C003_Flying_D_Additive",
+      "speed": 1,
+      "loop": true,
+      "fade": 0.1,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "flyStop": {
+      "clip": "C003_Flying_Stop",
+      "speed": 1,
+      "loop": false,
+      "fade": 0.1,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "land": {
+      "clip": "C003_Land",
+      "speed": 1,
+      "loop": false,
+      "fade": 0.07,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "punch": {
+      "clip": "C003_Punch_01",
+      "speed": 1.05,
+      "loop": false,
+      "fade": 0.07,
+      "removeRootMotion": false,
+      "events": [
+        {
+          "id": "punch-hit",
+          "time": 0.19,
+          "type": "damage",
+          "label": "SOCO",
+          "damage": 22,
+          "knockback": 1.25,
+          "radius": 1.85,
+          "hitboxId": "right-fist"
+        }
+      ]
+    },
+    "superPunch": {
+      "clip": "C003_N_Attack_01",
+      "speed": 1.16,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "events": [
+        {
+          "id": "super-punch-hit",
+          "time": 0.22,
+          "type": "damage",
+          "label": "SUPER SOCO",
+          "damage": 48,
+          "knockback": 5.5,
+          "radius": 2.45,
+          "hitboxId": "right-fist"
+        },
+        {
+          "id": "super-punch-shake",
+          "time": 0.22,
+          "type": "cameraShake",
+          "strength": 0.72
+        }
+      ]
+    },
+    "leapAttack": {
+      "clip": "C003_LeapAttack",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "note": "Ataque de salto: wind-up e fase aérea. O deslocamento no mundo é controlado pelo gameplay para respeitar colisões/cidade.",
+      "events": []
+    },
+    "leapAttackLand": {
+      "clip": "C003_LeapAttackLand",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.055,
+      "removeRootMotion": false,
+      "note": "Recuperação/impacto do Leap Attack. O dano AOE dispara no touchdown, sincronizado com a transição para este clip.",
+      "events": [
+        {
+          "id": "leap-aoe-impact",
+          "time": 0.05,
+          "type": "leapAttackAOE"
+        }
+      ]
+    },
+    "heatVision": {
+      "clip": "C003_Laser_Air",
+      "speed": 1.05,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "events": [
+        {
+          "id": "laser-hit",
+          "time": 0.1,
+          "type": "heatVision",
+          "label": "VISÃO DE CALOR",
+          "damage": 18,
+          "knockback": 0.45,
+          "radius": 1.2
+        }
+      ]
+    },
+    "heatVisionGround": {
+      "clip": "C003_Laser_Ground",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "events": [
+        {
+          "id": "laser-hit",
+          "time": 0.1,
+          "type": "heatVision",
+          "label": "VISÃO DE CALOR",
+          "damage": 18,
+          "knockback": 0.45,
+          "radius": 1.2
+        }
+      ]
+    },
+    "hurt": {
+      "clip": "C003_Idle_01",
+      "speed": 1,
+      "loop": false,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "death": {
+      "clip": "C003_Idle_01",
+      "speed": 1,
+      "loop": false,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "iceBreathGroundStart": {
+      "clip": "C003_IceBreath",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "iceBreathGroundLoop": {
+      "clip": "C003_IceBreath_Loop",
+      "speed": 1.0,
+      "loop": true,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "iceBreathGroundExit": {
+      "clip": "C003_IceBreath_IntoIdle",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "iceBreathAirStart": {
+      "clip": "C003_Air_IceBreath",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "iceBreathAirLoop": {
+      "clip": "C003_Air_IceBreath_Loop",
+      "speed": 1.0,
+      "loop": true,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "iceBreathAirExit": {
+      "clip": "C003_Air_IceBreath_IntoIdle",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    }
+  },
+  "hitboxes": [
+    {
+      "id": "right-fist",
+      "name": "Punho direito",
+      "purpose": "attack",
+      "bone": "fml_un_R_wrist",
+      "shape": "sphere",
+      "radius": 0.34,
+      "size": {
+        "x": 0.68,
+        "y": 0.68,
+        "z": 0.68
+      },
+      "offset": {
+        "x": 0.08,
+        "y": 0,
+        "z": 0
+      }
+    },
+    {
+      "id": "body-hurt",
+      "name": "Corpo",
+      "purpose": "hurtbox",
+      "bone": "fml_un_C_spine_b",
+      "shape": "box",
+      "radius": 0.6,
+      "size": {
+        "x": 0.9,
+        "y": 1.25,
+        "z": 0.65
+      },
+      "offset": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      }
+    },
+    {
+      "id": "head-hurt",
+      "name": "Cabeça",
+      "purpose": "hurtbox",
+      "bone": "fml_un_C_head",
+      "shape": "sphere",
+      "radius": 0.34,
+      "size": {
+        "x": 0.68,
+        "y": 0.68,
+        "z": 0.68
+      },
+      "offset": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      }
+    }
+  ],
+  "aiNotes": "V8: este arquivo é carregado automaticamente pelo jogo. Edite pelo Configurador 2.0 e substitua este JSON para aplicar as mudanças sem alterar main.js. V12: airIdle usa C003_S08_Emote_CharacterSelect_Loop; heatVision usa intro autoral e um hold-loop gerado da cauda do clip enquanto Q permanece pressionado."
+}

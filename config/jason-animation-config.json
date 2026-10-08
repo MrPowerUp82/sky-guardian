@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 2,
+  "characterId": "jason",
+  "characterLabel": "Jason",
+  "modelFile": "./assets/jason/Jason-game.glb",
+  "transform": {
+    "rotationDeg": { "x": 0, "y": -90, "z": 0 },
+    "mirror": { "x": false, "y": false, "z": false },
+    "targetHeight": 2.35
+  },
+  "slots": {
+    "idle": { "clip": "Jason_Nav_Idle", "speed": 1, "loop": true, "fade": 0.16, "removeRootMotion": true, "events": [] },
+    "walk": { "clip": "Jason_Walk", "speed": 1.02, "loop": true, "fade": 0.14, "removeRootMotion": true, "events": [] },
+    "run": { "clip": "Jason_Walk", "speed": 1.28, "loop": true, "fade": 0.12, "removeRootMotion": true, "events": [] },
+    "attack1": {
+      "clip": "Jason_Attack_Combo_01", "speed": 1.22, "loop": false, "fade": 0.06, "removeRootMotion": true,
+      "events": [{ "id": "jason-a1-hit", "time": 0.46, "type": "damage", "label": "JASON ATAQUE 1", "damage": 14, "knockback": 11, "radius": 2.15, "hitboxId": "right-fist" }]
+    },
+    "attack2": {
+      "clip": "Jason_Attack_Combo_02", "speed": 1.10, "loop": false, "fade": 0.06, "removeRootMotion": true,
+      "events": [{ "id": "jason-a2-hit", "time": 0.34, "type": "damage", "label": "JASON ATAQUE 2", "damage": 14, "knockback": 11, "radius": 2.1, "hitboxId": "right-fist" }]
+    },
+    "attack3": {
+      "clip": "Jason_Attack_Combo_03", "speed": 1.10, "loop": false, "fade": 0.06, "removeRootMotion": true,
+      "events": [{ "id": "jason-a3-hit", "time": 0.30, "type": "damage", "label": "JASON ATAQUE 3", "damage": 18, "knockback": 12, "radius": 2.25, "hitboxId": "left-fist" }]
+    },
+    "specialAttack": {
+      "clip": "Jason_Attack_Dash_Shoulder_Bash", "speed": 1.08, "loop": false, "fade": 0.05, "removeRootMotion": true,
+      "events": [{ "id": "jason-dash-hit", "time": 0.46, "type": "damage", "label": "OMBRO", "damage": 20, "knockback": 14, "radius": 2.65, "hitboxId": "body-hit" }]
+    },
+    "hurt": { "clip": "Jason_HR_Deflect", "speed": 1.15, "loop": false, "fade": 0.06, "removeRootMotion": true, "events": [] },
+    "knockback": { "clip": "Jason_HR_Flyback_B_Enter", "speed": 0.86, "loop": false, "fade": 0.04, "removeRootMotion": true, "events": [] },
+    "death": { "clip": "Jason_HR_Flyback_B_Enter", "speed": 0.86, "loop": false, "fade": 0.04, "removeRootMotion": true, "events": [] }
+  },
+  "hitboxes": [
+    { "id": "right-fist", "name": "Punho direito", "purpose": "attack", "bone": "fml_un_R_wrist", "shape": "sphere", "radius": 0.42, "size": { "x": 0.84, "y": 0.84, "z": 0.84 }, "offset": { "x": 0.08, "y": 0, "z": 0 } },
+    { "id": "left-fist", "name": "Punho esquerdo", "purpose": "attack", "bone": "fml_un_L_wrist", "shape": "sphere", "radius": 0.42, "size": { "x": 0.84, "y": 0.84, "z": 0.84 }, "offset": { "x": 0.08, "y": 0, "z": 0 } },
+    { "id": "body-hit", "name": "Ombro/corpo", "purpose": "attack", "bone": "fml_un_C_spine_b", "shape": "box", "radius": 0.9, "size": { "x": 1.35, "y": 1.45, "z": 0.9 }, "offset": { "x": 0.15, "y": 0, "z": 0 } },
+    { "id": "body-hurt", "name": "Corpo", "purpose": "hurtbox", "bone": "fml_un_C_spine_b", "shape": "box", "radius": 0.75, "size": { "x": 1.15, "y": 1.55, "z": 0.85 }, "offset": { "x": 0, "y": 0, "z": 0 } }
+  ],
+  "aiNotes": "V8: eventos de dano e hitboxes do Jason são configuráveis na timeline."
+}
