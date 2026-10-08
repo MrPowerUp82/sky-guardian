@@ -11,6 +11,13 @@ import { MeteorEvent } from './game/events/meteor-event.js';
 import { BuildingFireEvent, selectBuildingTarget, createBuildingFireSpots } from './game/events/building-fire-event.js';
 import { DynamicEventSystem } from './game/events/dynamic-event-system.js';
 import { EnemyPoise, enemyLevelStats } from './game/combat/enemy-poise.js';
+import { makeRoadCenters, classifyDistrict, lotFacingRotation, chunkKey, snapFocusToLightTexels } from './game/world/city-layout.js';
+import { SkyDome } from './game/fx/sky-dome.js';
+import { PostFx, postFxQualityFromUrl } from './game/fx/post-fx.js';
+import { ParticleBursts } from './game/fx/particle-bursts.js';
+import { CloudLayer, BirdFlocks } from './game/fx/ambient-life.js';
+import { InstancedTraffic } from './game/world/instanced-traffic.js';
+import { AdaptiveResolution } from './game/fx/adaptive-quality.js';
 
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -27,24 +34,51 @@ const scene = new THREE.Scene();
 const DAY_BACKGROUND = new THREE.Color(0x8fcfff);
 const DAY_FOG_COLOR = new THREE.Color(0xb7ddf7);
 const SPACE_BACKGROUND = new THREE.Color(0x020713);
-const worldFog = new THREE.FogExp2(DAY_FOG_COLOR.clone(), 0.00145);
+const DAY_FOG_DENSITY = 0.00085;
+const worldFog = new THREE.FogExp2(DAY_FOG_COLOR.clone(), DAY_FOG_DENSITY);
 scene.background = DAY_BACKGROUND.clone();
 scene.fog = worldFog;
 
 const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 40000);
+const postFx = new PostFx(renderer, scene, camera, { quality: postFxQualityFromUrl(location.search) });
 
 const hemi = new THREE.HemisphereLight(0xd7efff, 0x43513b, 2.15);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff1d0, 4.0);
-sun.position.set(-120, 210, 90);
 sun.castShadow = true;
+// The shadow frustum follows the hero (see updateSunShadow), so a tight 2k map
+// stays sharp no matter how large the city is.
+const SUN_OFFSET = new THREE.Vector3(-120, 210, 90);
+const SUN_SHADOW_RANGE = 170;
+sun.position.copy(SUN_OFFSET);
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -470;
-sun.shadow.camera.right = 470;
-sun.shadow.camera.top = 470;
-sun.shadow.camera.bottom = -470;
-sun.shadow.camera.far = 900;
-scene.add(sun);
+sun.shadow.camera.left = -SUN_SHADOW_RANGE;
+sun.shadow.camera.right = SUN_SHADOW_RANGE;
+sun.shadow.camera.top = SUN_SHADOW_RANGE;
+sun.shadow.camera.bottom = -SUN_SHADOW_RANGE;
+sun.shadow.camera.near = 20;
+sun.shadow.camera.far = 760;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.35;
+scene.add(sun, sun.target);
+
+// The sun's shadow map is re-rendered on a timer instead of every frame; the
+// interval grows if the machine cannot keep up (see degradeQuality).
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
+let shadowInterval = 1 / 40;
+let shadowClock = 0;
+
+function updateSunShadow() {
+  const focus = snapFocusToLightTexels(
+    { x: hero.position.x, y: 0, z: hero.position.z },
+    SUN_OFFSET,
+    SUN_SHADOW_RANGE * 2 / sun.shadow.mapSize.x
+  );
+  sun.target.position.set(focus.x, focus.y, focus.z);
+  sun.position.set(focus.x + SUN_OFFSET.x, focus.y + SUN_OFFSET.y, focus.z + SUN_OFFSET.z);
+  sun.target.updateMatrixWorld();
+}
 
 const rng = mulberry32(74329);
 const gltfLoader = new GLTFLoader();
@@ -96,8 +130,21 @@ function applyConfiguredOrientation(group, config) {
 const world = new THREE.Group();
 scene.add(world);
 
+// V18: a 15 x 15 avenue grid (~1.4 km across). Everything that used to hard-code
+// the old +-384 extent now derives from these constants.
+const ROAD_SPACING = 96;
+const ROAD_COUNT = 15;
+const roadLaneCenters = makeRoadCenters(ROAD_COUNT, ROAD_SPACING);
+const CITY_HALF = (ROAD_COUNT - 1) / 2 * ROAD_SPACING;
+const WORLD_LIMIT = CITY_HALF + 46;
+const CITY_EDGE = CITY_HALF + 32;
+const TILE = 32;
+// Instances are grouped per spatial chunk so each InstancedMesh gets a tight
+// bounding sphere and the camera and sun-shadow frusta can cull whole districts.
+const INSTANCE_CHUNK = 128;
+
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(1500, 1500),
+  new THREE.PlaneGeometry((CITY_HALF + 700) * 2, (CITY_HALF + 700) * 2),
   new THREE.MeshStandardMaterial({ color: 0x5d7b49, roughness: 1 })
 );
 ground.rotation.x = -Math.PI / 2;
@@ -105,53 +152,81 @@ ground.position.y = -0.06;
 ground.receiveShadow = true;
 world.add(ground);
 
+// Kenney CC0 models ship inside the project (assets/kenney); the public mirror is
+// only a fallback if a local file is missing.
 const TGE = 'https://raw.githubusercontent.com/Hidencod/tge-assets/main/';
-const assetUrl = path => TGE + path;
+const LOCAL_KENNEY = './assets/kenney/';
+const assetUrl = path => LOCAL_KENNEY + path.replace(/^packs\//, '');
+const mirrorUrl = path => TGE + path;
 
 const CITY_ASSETS = {
-  buildings: [
-    'packs/city-kit-commercial/building-a.glb',
-    'packs/city-kit-commercial/building-c.glb',
-    'packs/city-kit-commercial/building-e.glb',
-    'packs/city-kit-commercial/building-g.glb',
-    'packs/city-kit-commercial/building-i.glb',
-    'packs/city-kit-commercial/building-skyscraper-a.glb',
-    'packs/city-kit-commercial/building-skyscraper-b.glb',
-    'packs/city-kit-commercial/building-skyscraper-d.glb'
+  // 'midrise' and 'tower' pools feed the downtown and mixed districts.
+  midrise: ['a','b','c','d','e','f','g','h','i','j','k','l','n'].map(k => `packs/city-kit-commercial/building-${k}.glb`),
+  towers: [
+    'packs/city-kit-commercial/building-m.glb',
+    ...['a','b','c','d','e'].map(k => `packs/city-kit-commercial/building-skyscraper-${k}.glb`)
   ],
+  // Cheap silhouettes for the decorative horizon beyond the playable area.
+  skyline: [
+    ...['a','b','c','d','e','f'].map(k => `packs/city-kit-commercial/low-detail-building-${k}.glb`),
+    'packs/city-kit-commercial/low-detail-building-wide-a.glb',
+    'packs/city-kit-commercial/low-detail-building-wide-b.glb'
+  ],
+  houses: ['a','b','c','d','e','f','g','h','i','j','k','l'].map(k => `packs/city-kit-suburban/building-type-${k}.glb`),
   roadStraight: 'packs/city-kit-roads/road-straight.glb',
   roadCross: 'packs/city-kit-roads/road-crossroad.glb',
-  streetLight: 'packs/city-kit-roads/light-curved.glb',
+  streetLights: ['packs/city-kit-roads/light-curved.glb', 'packs/city-kit-roads/light-square.glb'],
   trafficLight: 'packs/city-kit-roads/traffic-light-hanging.glb',
+  props: {
+    cone: 'packs/city-kit-roads/construction-cone.glb',
+    barrier: 'packs/city-kit-roads/construction-barrier.glb',
+    dumpster: 'packs/city-kit-roads/dumpster.glb',
+    streetSign: 'packs/city-kit-roads/road-sign-street.glb'
+  },
+  // `length` is the on-screen vehicle length in metres.
   cars: [
-    'packs/car-kit/sedan.glb',
-    'packs/car-kit/sedan-sports.glb',
-    'packs/car-kit/suv.glb',
-    'packs/car-kit/taxi.glb',
-    'packs/car-kit/police.glb'
+    { path: 'packs/car-kit/sedan.glb', length: 4.6 },
+    { path: 'packs/car-kit/sedan-sports.glb', length: 4.7 },
+    { path: 'packs/car-kit/suv.glb', length: 4.9 },
+    { path: 'packs/car-kit/suv-luxury.glb', length: 5.0 },
+    { path: 'packs/car-kit/taxi.glb', length: 4.6 },
+    { path: 'packs/car-kit/police.glb', length: 4.8 },
+    { path: 'packs/car-kit/hatchback-sports.glb', length: 4.4 },
+    { path: 'packs/car-kit/van.glb', length: 5.4 },
+    { path: 'packs/car-kit/delivery.glb', length: 6.2 },
+    { path: 'packs/car-kit/truck.glb', length: 6.0 },
+    { path: 'packs/car-kit/garbage-truck.glb', length: 7.0 },
+    { path: 'packs/car-kit/ambulance.glb', length: 6.0 },
+    { path: 'packs/car-kit/firetruck.glb', length: 7.4 }
   ],
   trees: [
     'packs/nature-kit/tree-oak.glb',
     'packs/nature-kit/tree-fat.glb',
-    'packs/nature-kit/tree-pinedefaulta.glb'
+    'packs/nature-kit/tree-pinedefaulta.glb',
+    'packs/nature-kit/tree-detailed.glb',
+    'packs/nature-kit/tree-tall.glb'
   ],
-  npcs: [
-    'packs/mini-characters/character-female-a.glb',
-    'packs/mini-characters/character-female-c.glb',
-    'packs/mini-characters/character-female-e.glb',
-    'packs/mini-characters/character-male-a.glb',
-    'packs/mini-characters/character-male-c.glb',
-    'packs/mini-characters/character-male-e.glb'
-  ]
+  suburbTrees: ['packs/city-kit-suburban/tree-large.glb', 'packs/city-kit-suburban/tree-small.glb'],
+  plants: [
+    'packs/nature-kit/plant-bush.glb',
+    'packs/nature-kit/plant-bushlarge.glb',
+    'packs/nature-kit/flower-reda.glb',
+    'packs/nature-kit/flower-yellowa.glb',
+    'packs/nature-kit/flower-purplea.glb',
+    'packs/nature-kit/rock-largea.glb',
+    'packs/nature-kit/rock-largeb.glb'
+  ],
+  npcs: ['a','b','c','d','e','f'].flatMap(k => [`female-${k}`, `male-${k}`]).map(k => `packs/mini-characters/character-${k}.glb`)
 };
 
+const TRAFFIC_COUNT = 96;
+const TRAFFIC_RENDER_RADIUS = 200;
+const NPC_RENDER_RADIUS = 170;
+let carRenderer = null;
+const CROWD_COUNT = 120;
 const trafficActors = [];
 const npcActors = [];
 const npcMixers = [];
-const roadLaneCenters = [-384, -288, -192, -96, 0, 96, 192, 288, 384];
-const WORLD_LIMIT = 430;
-const CITY_EDGE = 416;
-const TILE = 32;
 // V11 ground-contact tuning. The road kit and procedural block pads sit a few
 // centimetres above the old Y=0 gameplay plane, so characters must snap to the
 // actual visible surface rather than an abstract zero-height floor.
@@ -196,20 +271,24 @@ function updateAssetStatus() {
   statusEl.textContent = `Carregando cidade CC0... ${loadedAssetCount}/${totalAssetCount}`;
 }
 
-function loadGLTF(url) {
+function loadGLTF(path) {
   return new Promise((resolve, reject) => {
-    gltfLoader.load(url, gltf => {
+    const onLoad = gltf => {
       loadedAssetCount++;
       updateAssetStatus();
       resolve(gltf);
-    }, undefined, reject);
+    };
+    // Local copy first; the public mirror only matters if a file is missing.
+    gltfLoader.load(assetUrl(path), onLoad, undefined, () => gltfLoader.load(mirrorUrl(path), onLoad, undefined, reject));
   });
 }
 
-function prepScene(root, { shadows = true } = {}) {
+// `cast: false` keeps a prop receiving shadows without adding it to the sun's
+// shadow pass; small street props are not worth the extra geometry there.
+function prepScene(root, { shadows = true, cast = shadows } = {}) {
   root.traverse(obj => {
     if (!obj.isMesh) return;
-    obj.castShadow = shadows;
+    obj.castShadow = cast;
     obj.receiveShadow = shadows;
     if (obj.material) {
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -322,14 +401,14 @@ function makeFallbackCity() {
   // Only visible if remote assets fail. The normal version uses real GLBs.
   const roadMat = new THREE.MeshStandardMaterial({ color: 0x292d33, roughness: 1 });
   for (const v of roadLaneCenters) {
-    const a = new THREE.Mesh(new THREE.BoxGeometry(840, 0.08, 18), roadMat);
+    const a = new THREE.Mesh(new THREE.BoxGeometry(CITY_HALF * 2 + 60, 0.08, 18), roadMat);
     a.position.set(0, 0.02, v); a.receiveShadow = true; world.add(a);
     const b = a.clone(); b.rotation.y = Math.PI / 2; b.position.set(v, 0.02, 0); world.add(b);
   }
   const geo = new THREE.BoxGeometry(1, 1, 1);
   const mat = new THREE.MeshStandardMaterial({ color: 0xa8b0b8, roughness: .85 });
-  for (let x = -384; x <= 384; x += 48) {
-    for (let z = -384; z <= 384; z += 48) {
+  for (let x = -CITY_HALF; x <= CITY_HALF; x += 48) {
+    for (let z = -CITY_HALF; z <= CITY_HALF; z += 48) {
       if (roadLaneCenters.some(v => Math.abs(x - v) < 20 || Math.abs(z - v) < 20)) continue;
       const h = 18 + rng() * 60;
       const m = new THREE.Mesh(geo, mat);
@@ -340,42 +419,51 @@ function makeFallbackCity() {
 }
 
 async function buildCC0City() {
-  totalAssetCount = CITY_ASSETS.buildings.length + CITY_ASSETS.cars.length + CITY_ASSETS.trees.length + CITY_ASSETS.npcs.length + 4;
+  const buildStart = performance.now();
+  const A = CITY_ASSETS;
+  const propPaths = Object.values(A.props);
+  totalAssetCount = A.midrise.length + A.towers.length + A.skyline.length + A.houses.length + A.streetLights.length
+    + A.cars.length + A.trees.length + A.suburbTrees.length + A.plants.length + A.npcs.length + propPaths.length + 3;
   updateAssetStatus();
   try {
-    const [buildingGLTFs, roadStraightGLTF, roadCrossGLTF, lightGLTF, trafficLightGLTF, carGLTFs, treeGLTFs, npcGLTFs] = await Promise.all([
-      Promise.all(CITY_ASSETS.buildings.map(p => loadGLTF(assetUrl(p)))),
-      loadGLTF(assetUrl(CITY_ASSETS.roadStraight)),
-      loadGLTF(assetUrl(CITY_ASSETS.roadCross)),
-      loadGLTF(assetUrl(CITY_ASSETS.streetLight)),
-      loadGLTF(assetUrl(CITY_ASSETS.trafficLight)),
-      Promise.all(CITY_ASSETS.cars.map(p => loadGLTF(assetUrl(p)))),
-      Promise.all(CITY_ASSETS.trees.map(p => loadGLTF(assetUrl(p)))),
-      Promise.all(CITY_ASSETS.npcs.map(p => loadGLTF(assetUrl(p))))
+    const all = list => Promise.all(list.map(p => loadGLTF(p)));
+    const [midriseG, towerG, skylineG, houseG, roadStraightGLTF, roadCrossGLTF, lightGs, trafficLightGLTF, propGs, carGs, treeGs, suburbTreeGs, plantGs, npcGs] = await Promise.all([
+      all(A.midrise), all(A.towers), all(A.skyline), all(A.houses),
+      loadGLTF(A.roadStraight), loadGLTF(A.roadCross), all(A.streetLights), loadGLTF(A.trafficLight),
+      all(propPaths), all(A.cars.map(c => c.path)), all(A.trees), all(A.suburbTrees), all(A.plants), all(A.npcs)
     ]);
 
-    const buildingTemplates = buildingGLTFs.map((g, i) => ({
-      scene: prepScene(g.scene, { shadows: true }),
-      kind: i < 5 ? 'midrise' : 'skyscraper'
-    }));
+    const shaded = list => list.map(g => prepScene(g.scene, { shadows: true }));
+    const props = (list, castShadow = false) => list.map(g => prepScene(g.scene, { shadows: true, cast: castShadow }));
+    const templates = {
+      midrise: shaded(midriseG),
+      towers: shaded(towerG),
+      skyline: skylineG.map(g => prepScene(g.scene, { shadows: false })),
+      houses: shaded(houseG),
+      lights: props(lightGs),
+      traffic: prepScene(trafficLightGLTF.scene, { shadows: true, cast: false }),
+      props: Object.fromEntries(Object.keys(A.props).map((key, i) => [key, prepScene(propGs[i].scene, { shadows: true, cast: false })])),
+      cars: carGs.map((g, i) => ({ scene: prepScene(g.scene, { shadows: true }), length: A.cars[i].length })),
+      trees: shaded(treeGs),
+      suburbTrees: shaded(suburbTreeGs),
+      plants: props(plantGs)
+    };
     const straightTemplate = prepScene(roadStraightGLTF.scene, { shadows: false });
     const crossTemplate = prepScene(roadCrossGLTF.scene, { shadows: false });
-    const lightTemplate = prepScene(lightGLTF.scene, { shadows: true });
-    const trafficLightTemplate = prepScene(trafficLightGLTF.scene, { shadows: true });
-    const carTemplates = carGLTFs.map(g => prepScene(g.scene, { shadows: true }));
-    const treeTemplates = treeGLTFs.map(g => prepScene(g.scene, { shadows: true }));
-    const npcTemplates = npcGLTFs.map((g, i) => ({ scene: prepScene(g.scene, { shadows: true }), animations: g.animations, i }));
+    const npcTemplates = npcGs.map((g, i) => ({ scene: prepScene(g.scene, { shadows: true }), animations: g.animations, i }));
 
     buildRoadGrid(straightTemplate, crossTemplate);
     buildRoadMarkings();
-    buildBuildings(buildingTemplates);
-    buildStreetFurniture(lightTemplate, trafficLightTemplate, treeTemplates);
-    buildTraffic(carTemplates);
+    buildBuildings(templates);
+    buildStreetFurniture(templates);
+    buildTraffic(templates.cars);
     buildCrowd(npcTemplates);
     optimizeWorldInstancing();
 
     cityLoaded = true;
-    setAssetStatus(heroReady && enemyReady ? 'Cidade V9 CC0 · distritos + parques + tráfego + NPCs · Superman + Jason' : heroReady ? 'Cidade V9 CC0 · distritos + parques + tráfego + NPCs · Superman local' : 'Cidade V9 CC0 · distritos, parques, ruas, carros, árvores e NPCs carregados');
+    console.info(`[city] ${Math.round(performance.now() - buildStart)} ms · ${buildingColliders.length} buildings`);
+    const cityLabel = 'Cidade V18 CC0 · 15×15 avenidas · centro, bairros e subúrbios · tráfego + NPCs';
+    setAssetStatus(heroReady && enemyReady ? `${cityLabel} · Superman + Jason` : heroReady ? `${cityLabel} · Superman local` : cityLabel);
   } catch (err) {
     console.warn('Falha ao carregar cidade CC0; usando fallback:', err);
     makeFallbackCity();
@@ -438,7 +526,7 @@ function buildRoadGrid(straightTemplate, crossTemplate) {
   // only decides where each real road asset goes.
   measureRoadProfile(straightTemplate);
   const roadSet = new Set(roadLaneCenters.map(v => Math.round(v / TILE)));
-  const minCell = -13, maxCell = 13;
+  const maxCell = Math.round(CITY_HALF / TILE), minCell = -maxCell;
   for (let gx = minCell; gx <= maxCell; gx++) {
     for (let gz = minCell; gz <= maxCell; gz++) {
       const xRoad = roadSet.has(gx);
@@ -461,22 +549,13 @@ function buildRoadMarkings() {
   const dashGeo = new THREE.BoxGeometry(5.6, .018, .16);
   const dashTransforms = [];
   for (const road of roadLaneCenters) {
-    for (let t = -400; t <= 400; t += 14) {
+    for (let t = -CITY_HALF - 16; t <= CITY_HALF + 16; t += 14) {
       if (roadLaneCenters.some(v => Math.abs(t - v) < 18)) continue;
       dashTransforms.push({ x:t, z:road, rot:0 });
       dashTransforms.push({ x:road, z:t, rot:Math.PI / 2 });
     }
   }
-  const dashes = new THREE.InstancedMesh(dashGeo, lineMat, dashTransforms.length);
-  const dummy = new THREE.Object3D();
-  dashTransforms.forEach((d, i) => {
-    dummy.position.set(d.x, roadAsphaltY + .01, d.z);
-    dummy.rotation.set(0, d.rot, 0);
-    dummy.updateMatrix();
-    dashes.setMatrixAt(i, dummy.matrix);
-  });
-  dashes.receiveShadow = false;
-  world.add(dashes);
+  addChunkedInstances(dashGeo, lineMat, dashTransforms, roadAsphaltY + .01);
 
   const stripeGeo = new THREE.BoxGeometry(1.0, .022, 8.2);
   const stripes = [];
@@ -491,14 +570,31 @@ function buildRoadMarkings() {
       }
     }
   }
-  const crossings = new THREE.InstancedMesh(stripeGeo, crossMat, stripes.length);
-  stripes.forEach((d, i) => {
-    dummy.position.set(d.x, roadAsphaltY + .012, d.z);
-    dummy.rotation.set(0, d.rot, 0);
-    dummy.updateMatrix();
-    crossings.setMatrixAt(i, dummy.matrix);
-  });
-  world.add(crossings);
+  addChunkedInstances(stripeGeo, crossMat, stripes, roadAsphaltY + .012);
+}
+
+// One InstancedMesh per spatial chunk (instead of one for the whole city) so
+// distant road paint is frustum-culled like everything else.
+function addChunkedInstances(geometry, material, transforms, y) {
+  const chunks = new Map();
+  for (const t of transforms) {
+    const key = chunkKey(t.x, t.z, INSTANCE_CHUNK);
+    let list = chunks.get(key);
+    if (!list) { list = []; chunks.set(key, list); }
+    list.push(t);
+  }
+  const dummy = new THREE.Object3D();
+  for (const list of chunks.values()) {
+    const mesh = new THREE.InstancedMesh(geometry, material, list.length);
+    list.forEach((t, i) => {
+      dummy.position.set(t.x, y, t.z);
+      dummy.rotation.set(0, t.rot, 0);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+    mesh.matrixAutoUpdate = false;
+    world.add(mesh);
+  }
 }
 
 function registerBuildingCollider(object) {
@@ -531,46 +627,85 @@ function registerBuildingCollider(object) {
   }
 }
 
-function buildBuildings(templates) {
-  // V9 district planner: the center becomes a dense commercial core, the
-  // middle ring mixes towers/midrises, and the outer blocks open up into
-  // residential-looking lots, plazas and parks. This avoids the old repeated
-  // four-buildings-per-block pattern while preserving the authored GLB scale.
+// Spots for yard trees/bushes next to suburban houses, filled while planning
+// blocks and consumed by buildStreetFurniture.
+const yardSpots = [];
+
+// Colliders whose 64 m grid cells touch the segment a -> b. Scanning every
+// building per ray no longer scales now that the city has hundreds of them.
+function collidersAlong(a, b, pad = 2) {
+  const out = new Set();
+  const minGX = Math.floor((Math.min(a.x, b.x) - pad) / 64), maxGX = Math.floor((Math.max(a.x, b.x) + pad) / 64);
+  const minGZ = Math.floor((Math.min(a.z, b.z) - pad) / 64), maxGZ = Math.floor((Math.max(a.z, b.z) + pad) / 64);
+  for (let gx = minGX; gx <= maxGX; gx++) {
+    for (let gz = minGZ; gz <= maxGZ; gz++) {
+      const cell = colliderGrid.get(gx + ',' + gz);
+      if (cell) for (const box of cell) out.add(box);
+    }
+  }
+  return out;
+}
+
+function buildBuildings(t) {
+  // V18 district planner. Distance from the centre decides the character of a
+  // block: a dense downtown core of towers, a mixed ring, residential blocks
+  // with low-rise + houses, and suburbs of detached houses with yards. Parks and
+  // plazas become more common the further out you go. Facades face the street.
   const blockCenters = [];
   for (let i = 0; i < roadLaneCenters.length - 1; i++) {
     blockCenters.push((roadLaneCenters[i] + roadLaneCenters[i + 1]) * .5);
   }
-  const midrise = templates.filter(t => t.kind === 'midrise');
-  const skyscrapers = templates.filter(t => t.kind === 'skyscraper');
+  const lowIdx = new Set([2, 4, 9, 10, 12]);
+  const lowrise = t.midrise.filter((_, i) => lowIdx.has(i));
+  const midrise = t.midrise.filter((_, i) => !lowIdx.has(i));
+  const towers = t.towers;
+  const houses = t.houses;
   const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0xb8babd, roughness: .96 });
   const plazaMat = new THREE.MeshStandardMaterial({ color: 0xc8c3b6, roughness: .93 });
   const parkMat = new THREE.MeshStandardMaterial({ color: 0x627f4c, roughness: 1 });
+  const lawnMat = new THREE.MeshStandardMaterial({ color: 0x78a05a, roughness: 1 });
   const blockGeo = new THREE.BoxGeometry(65, .10, 65);
   let count = 0;
 
   const choose = pool => pool[(count++ + Math.floor(rng() * pool.length)) % pool.length];
-  const placeBuilding = (data, x, z, footprint, rot = 0) => {
-    if (!data) return null;
-    const b = normalizedInstance(data.scene, footprint, 'footprint');
+  const placeBuilding = (scene, x, z, footprint, rot = 0) => {
+    if (!scene) return null;
+    const b = normalizedInstance(scene, footprint, 'footprint');
     b.position.set(x, 0, z);
     b.rotation.y = rot;
     world.add(b);
     registerBuildingCollider(b);
     return b;
   };
+  const shuffled = list => list.map(v => [rng(), v]).sort((a, b) => a[0] - b[0]).map(e => e[1]);
+  const placeHouses = (bx, bz, wanted) => {
+    const cols = [-21, 0, 21], rows = [-21, 21];
+    const slots = shuffled(cols.flatMap(ox => rows.map(oz => [ox, oz])));
+    for (let i = 0; i < Math.min(wanted, slots.length); i++) {
+      const [ox, oz] = slots[i];
+      const x = bx + ox + (rng() - .5) * 2.5, z = bz + oz + (rng() - .5) * 2.5;
+      placeBuilding(choose(houses), x, z, 13 + rng() * 2.5, lotFacingRotation(ox, oz));
+      // Yard tree behind the house, bush beside it.
+      yardSpots.push({ x: x + (rng() - .5) * 8, z: z + Math.sign(oz) * (8 + rng() * 2), kind: 'tree' });
+      if (rng() > .4) yardSpots.push({ x: x + (rng() > .5 ? 1 : -1) * 8, z: z + (rng() - .5) * 6, kind: 'bush' });
+    }
+  };
 
   for (const bx of blockCenters) {
     for (const bz of blockCenters) {
-      const radial = Math.hypot(bx, bz);
-      const core = radial < 125;
-      const mid = radial < 285;
+      const district = classifyDistrict(Math.hypot(bx, bz), CITY_HALF);
+      const core = district === 'core';
+      const mid = district === 'mid';
+      const residential = district === 'residential';
+      const suburb = district === 'suburb';
       const roll = rng();
-      const parkChance = core ? .025 : mid ? .07 : .17;
-      const plazaChance = core ? .14 : mid ? .07 : .035;
+      const parkChance = core ? .025 : mid ? .07 : residential ? .13 : .1;
+      const plazaChance = core ? .14 : mid ? .07 : residential ? .04 : .02;
       const isPark = roll < parkChance;
       const isPlaza = !isPark && roll < parkChance + plazaChance;
 
-      const pad = new THREE.Mesh(blockGeo, isPark ? parkMat : isPlaza ? plazaMat : sidewalkMat);
+      const padMat = isPark ? parkMat : isPlaza ? plazaMat : (residential || suburb) ? lawnMat : sidewalkMat;
+      const pad = new THREE.Mesh(blockGeo, padMat);
       pad.position.set(bx, .01, bz);
       pad.receiveShadow = true;
       world.add(pad);
@@ -595,45 +730,66 @@ function buildBuildings(templates) {
       const quarter = Math.round(rng() * 3) * Math.PI / 2;
       if (isPlaza) {
         plazaBlocks.push({ x: bx, z: bz });
-        const pool = core && skyscrapers.length ? skyscrapers : midrise;
+        const pool = core ? towers : (mid ? midrise : lowrise);
         placeBuilding(choose(pool), bx + (rng()-.5)*9, bz + (rng()-.5)*9, core ? 27 : 23, quarter);
         continue;
       }
 
-      if (core && skyscrapers.length) {
+      if (core) {
         // Downtown campus: one signature tower plus smaller street-wall massing.
-        placeBuilding(choose(skyscrapers), bx + (rng()-.5)*4, bz + (rng()-.5)*4, 28 + rng()*4, quarter);
+        placeBuilding(choose(towers), bx + (rng()-.5)*4, bz + (rng()-.5)*4, 28 + rng()*4, quarter);
         if (rng() > .22) placeBuilding(choose(midrise), bx - 22, bz + 20, 17 + rng()*3, quarter + Math.PI/2);
         if (rng() > .35) placeBuilding(choose(midrise), bx + 21, bz - 20, 17 + rng()*3, quarter);
-      } else if (mid && rng() < .43 && skyscrapers.length) {
+      } else if (mid && rng() < .43) {
         // Mixed-use blocks: tower set back from the corner, with one/two lower buildings.
         const sx = rng() > .5 ? 1 : -1;
         const sz = rng() > .5 ? 1 : -1;
-        placeBuilding(choose(skyscrapers), bx + sx*10, bz + sz*10, 25 + rng()*4, quarter);
+        placeBuilding(choose(towers), bx + sx*10, bz + sz*10, 25 + rng()*4, quarter);
         placeBuilding(choose(midrise), bx - sx*20, bz + sz*18, 18 + rng()*4, quarter + Math.PI/2);
-        if (rng() > .45) placeBuilding(choose(midrise), bx + sx*18, bz - sz*21, 17 + rng()*3, quarter);
-      } else {
-        // Outer/midrise blocks deliberately vary between 2, 3 and 4 lots.
+        if (rng() > .45) placeBuilding(choose(lowrise), bx + sx*18, bz - sz*21, 17 + rng()*3, quarter);
+      } else if (mid) {
         const slots = [[-18,-18],[18,-18],[-18,18],[18,18]];
-        const lotCount = mid ? (rng() < .45 ? 4 : 3) : (rng() < .55 ? 2 : 3);
         const slotOffset = Math.floor(rng() * slots.length);
+        const lotCount = rng() < .45 ? 4 : 3;
         for (let i = 0; i < lotCount; i++) {
           const [ox, oz] = slots[(slotOffset + i) % slots.length];
-          placeBuilding(choose(midrise), bx + ox + (rng()-.5)*2, bz + oz + (rng()-.5)*2, 18 + rng()*4, quarter + (i%2)*Math.PI/2);
+          placeBuilding(choose(rng() < .5 ? midrise : lowrise), bx + ox + (rng()-.5)*2, bz + oz + (rng()-.5)*2, 18 + rng()*4, quarter + (i%2)*Math.PI/2);
         }
+      } else if (residential) {
+        // Low-rise apartments on one or two corners, houses filling the rest.
+        const slots = shuffled([[-19,-19],[19,-19],[-19,19],[19,19]]);
+        const apartments = 1 + Math.floor(rng() * 2);
+        for (let i = 0; i < apartments; i++) {
+          const [ox, oz] = slots[i];
+          placeBuilding(choose(lowrise), bx + ox, bz + oz, 17 + rng()*3, lotFacingRotation(ox, oz));
+        }
+        for (let i = apartments; i < 4; i++) {
+          const [ox, oz] = slots[i];
+          const x = bx + ox, z = bz + oz;
+          placeBuilding(choose(houses), x, z, 14 + rng()*2, lotFacingRotation(ox, oz));
+          yardSpots.push({ x: x - Math.sign(ox) * 8, z: z - Math.sign(oz) * 8, kind: 'tree' });
+        }
+      } else if (suburb) {
+        placeHouses(bx, bz, 4 + Math.floor(rng() * 3));
       }
     }
   }
 
-  // Decorative perimeter skyline makes the city continue visually beyond the
-  // playable boundary instead of ending at a hard row of blocks.
-  for (let i = 0; i < 24 && skyscrapers.length; i++) {
-    const angle = i / 24 * Math.PI * 2;
-    const radius = 455 + (i % 3) * 15;
-    const b = normalizedInstance(skyscrapers[i % skyscrapers.length].scene, 25 + rng() * 7, 'footprint');
-    b.position.set(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
-    b.rotation.y = angle + Math.PI;
-    world.add(b);
+  // Decorative horizon: two rings of cheap low-detail towers just outside the
+  // playable area so the city keeps going beyond the edge instead of ending.
+  for (let row = 0; row < 2; row++) {
+    const offset = CITY_HALF + 78 + row * 52;
+    for (let s = -offset; s <= offset; s += 34) {
+      for (const [x, z] of [[s, offset], [s, -offset], [offset, s], [-offset, s]]) {
+        if (rng() < .1) continue;
+        const data = t.skyline[Math.floor(rng() * t.skyline.length)];
+        const b = normalizedInstance(data, 15 + rng() * 10, 'footprint');
+        b.position.set(x + (rng() - .5) * 8, 0, z + (rng() - .5) * 8);
+        b.rotation.y = Math.round(rng() * 3) * Math.PI / 2;
+        b.scale.y *= .55 + rng() * .75;
+        world.add(b);
+      }
+    }
   }
 }
 
@@ -642,57 +798,125 @@ function placeOnSurface(object, x, z) {
   object.position.set(x, getBaseSurfaceHeightAt(x, z), z);
 }
 
-function buildStreetFurniture(lightTemplate, trafficTemplate, treeTemplates) {
-  // Streetlights/trees now follow the expanded avenue grid. Intersections are
-  // left clear for crosswalks and traffic lights.
+function buildStreetFurniture(t) {
+  // Streetlights, trees and props follow the avenue grid. Intersections are left
+  // clear for crosswalks, traffic lights and signs.
+  const reach = Math.floor((CITY_HALF + 16) / 32) * 32;
+  const treeChance = { core: .35, mid: .5, residential: .78, suburb: .9 };
+  let lightIndex = 0;
   for (const avenue of roadLaneCenters) {
-    for (let t = -400; t <= 400; t += 32) {
-      if (roadLaneCenters.some(v => Math.abs(t - v) < 14)) continue;
-      const side = ((Math.round(t / 32)) & 1) ? 1 : -1;
+    for (let p = -reach; p <= reach; p += 32) {
+      if (roadLaneCenters.some(v => Math.abs(p - v) < 14)) continue;
+      const side = ((Math.round(p / 32)) & 1) ? 1 : -1;
+      const lightTemplate = t.lights[(lightIndex++ >> 1) % t.lights.length];
 
       const lightA = normalizedInstance(lightTemplate, 6.3, 'height');
-      placeOnSurface(lightA, t, avenue + side * 13.5);
+      placeOnSurface(lightA, p, avenue + side * 13.5);
       lightA.rotation.y = side > 0 ? Math.PI : 0;
       world.add(lightA);
 
       const lightB = normalizedInstance(lightTemplate, 6.3, 'height');
-      placeOnSurface(lightB, avenue + side * 13.5, t);
+      placeOnSurface(lightB, avenue + side * 13.5, p);
       lightB.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
       world.add(lightB);
 
-      if (rng() > .48) {
-        const tree = normalizedInstance(treeTemplates[Math.floor(rng() * treeTemplates.length)], 5.2 + rng() * 3.2, 'height');
-        placeOnSurface(tree, t + 9, avenue - side * 13.2);
+      const district = classifyDistrict(Math.hypot(p, avenue), CITY_HALF);
+      if (rng() < treeChance[district]) {
+        const tree = normalizedInstance(t.trees[Math.floor(rng() * t.trees.length)], 5.2 + rng() * 3.2, 'height');
+        placeOnSurface(tree, p + 9, avenue - side * 13.2);
         tree.rotation.y = rng() * Math.PI * 2;
         world.add(tree);
+      }
+
+      // Sidewalk dumpsters downtown, now and then.
+      if ((district === 'core' || district === 'mid') && rng() < .05) {
+        const dumpster = normalizedInstance(t.props.dumpster, 2.2, 'footprint');
+        placeOnSurface(dumpster, p + 4, avenue + side * 14.6);
+        dumpster.rotation.y = side > 0 ? 0 : Math.PI;
+        world.add(dumpster);
       }
     }
   }
 
-  // Parks get clusters instead of a single token tree.
+  // Roadworks: a few cone/barrier clusters along the kerb lane of random avenues.
+  for (let i = 0; i < 26; i++) {
+    const avenue = roadLaneCenters[Math.floor(rng() * roadLaneCenters.length)];
+    const along = (rng() * 2 - 1) * (CITY_HALF - 30);
+    if (roadLaneCenters.some(v => Math.abs(along - v) < 24)) continue;
+    const alongX = rng() > .5;
+    const lane = (rng() > .5 ? 1 : -1) * 9.4;
+    const at = (a, l) => alongX ? [a, avenue + l] : [avenue + l, a];
+    const barrier = normalizedInstance(t.props.barrier, 3.4, 'footprint');
+    const [bx, bz] = at(along, lane);
+    barrier.position.set(bx, roadAsphaltY, bz);
+    barrier.rotation.y = alongX ? 0 : Math.PI / 2;
+    world.add(barrier);
+    for (let c = 1; c <= 3; c++) {
+      const cone = normalizedInstance(t.props.cone, 1, 'height');
+      const [cx, cz] = at(along - c * 3.2, lane - Math.sign(lane) * c * .7);
+      cone.position.set(cx, roadAsphaltY, cz);
+      world.add(cone);
+    }
+  }
+
+  // Parks: tree clusters underplanted with bushes, flowers and rocks.
   for (const park of parkBlocks) {
-    for (let i = 0; i < 10; i++) {
-      const a = i / 10 * Math.PI * 2 + rng()*.35;
-      const r = 8 + rng()*20;
-      const tree = normalizedInstance(treeTemplates[Math.floor(rng() * treeTemplates.length)], 5.4 + rng()*4, 'height');
-      placeOnSurface(tree, park.x + Math.cos(a)*r, park.z + Math.sin(a)*r);
-      tree.rotation.y = rng()*Math.PI*2;
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * Math.PI * 2 + rng() * .35;
+      const r = 8 + rng() * 21;
+      const tree = normalizedInstance(t.trees[Math.floor(rng() * t.trees.length)], 5.4 + rng() * 4.5, 'height');
+      placeOnSurface(tree, park.x + Math.cos(a) * r, park.z + Math.sin(a) * r);
+      tree.rotation.y = rng() * Math.PI * 2;
       world.add(tree);
+    }
+    for (let i = 0; i < 26; i++) {
+      const a = rng() * Math.PI * 2;
+      const r = 3 + rng() * 26;
+      const kind = Math.floor(rng() * t.plants.length);
+      const height = kind < 2 ? 1.2 + rng() * 1.2 : kind < 5 ? .5 + rng() * .35 : 1 + rng() * 1.2;
+      const plant = normalizedInstance(t.plants[kind], height, 'height');
+      placeOnSurface(plant, park.x + Math.cos(a) * r, park.z + Math.sin(a) * r);
+      plant.rotation.y = rng() * Math.PI * 2;
+      world.add(plant);
     }
   }
   for (const plaza of plazaBlocks) {
     for (let i = 0; i < 4; i++) {
-      const a = Math.PI*.5*i + Math.PI*.25;
-      const tree = normalizedInstance(treeTemplates[Math.floor(rng()*treeTemplates.length)], 5.5 + rng()*2, 'height');
-      placeOnSurface(tree, plaza.x + Math.cos(a)*25, plaza.z + Math.sin(a)*25);
+      const a = Math.PI * .5 * i + Math.PI * .25;
+      const tree = normalizedInstance(t.trees[Math.floor(rng() * t.trees.length)], 5.5 + rng() * 2, 'height');
+      placeOnSurface(tree, plaza.x + Math.cos(a) * 25, plaza.z + Math.sin(a) * 25);
       world.add(tree);
     }
   }
 
+  // House yards (collected by the block planner).
+  for (const spot of yardSpots) {
+    if (spot.kind === 'tree') {
+      const tree = normalizedInstance(t.suburbTrees[Math.floor(rng() * t.suburbTrees.length)], 6 + rng() * 3, 'height');
+      placeOnSurface(tree, spot.x, spot.z);
+      tree.rotation.y = rng() * Math.PI * 2;
+      world.add(tree);
+    } else {
+      const bush = normalizedInstance(t.plants[Math.floor(rng() * 2)], 1.1 + rng() * .8, 'height');
+      placeOnSurface(bush, spot.x, spot.z);
+      bush.rotation.y = rng() * Math.PI * 2;
+      world.add(bush);
+    }
+  }
+
+  // Intersections alternate between hanging traffic lights and street signs.
   for (const x of roadLaneCenters) {
     for (const z of roadLaneCenters) {
-      if ((Math.round(x/96) + Math.round(z/96)) % 2 !== 0) continue;
-      const tl = normalizedInstance(trafficTemplate, 6.8, 'height');
+      if ((Math.round(x / ROAD_SPACING) + Math.round(z / ROAD_SPACING)) % 2 !== 0) {
+        if (rng() < .5) {
+          const sign = normalizedInstance(t.props.streetSign, 4.2, 'height');
+          placeOnSurface(sign, x - 13.4, z + 13.4);
+          sign.rotation.y = Math.PI * .25;
+          world.add(sign);
+        }
+        continue;
+      }
+      const tl = normalizedInstance(t.traffic, 6.8, 'height');
       placeOnSurface(tl, x + 11.5, z + 11.5);
       tl.rotation.y = Math.PI * .25;
       world.add(tl);
@@ -701,34 +925,63 @@ function buildStreetFurniture(lightTemplate, trafficTemplate, treeTemplates) {
 }
 
 function buildTraffic(carTemplates) {
-  for (let i = 0; i < 34; i++) {
-    const axis = i % 2 === 0 ? 'x' : 'z';
-    const road = roadLaneCenters[Math.floor(rng() * roadLaneCenters.length)];
-    const direction = rng() > .5 ? 1 : -1;
-    const model = normalizedInstance(carTemplates[i % carTemplates.length], 4.6, 'footprint');
-    const laneOffset = direction * 3.6;
-    const progress = (rng() * 2 - 1) * 410;
-    if (axis === 'x') {
-      model.position.set(progress, roadAsphaltY, road + laneOffset);
-      model.rotation.y = direction > 0 ? Math.PI / 2 : -Math.PI / 2;
-    } else {
-      model.position.set(road - laneOffset, roadAsphaltY, progress);
-      model.rotation.y = direction > 0 ? 0 : Math.PI;
-    }
-    world.add(model);
-    trafficActors.push({ object: model, axis, direction, road, speed: 8 + rng() * 8 });
+  // Mostly everyday cars, some vans/trucks, the odd emergency vehicle.
+  const everyday = carTemplates.slice(0, 7), heavy = carTemplates.slice(7, 11), emergency = carTemplates.slice(11);
+  const pick = () => {
+    const roll = rng();
+    const pool = roll < .64 ? everyday : roll < .92 ? heavy : emergency;
+    return pool[Math.floor(rng() * pool.length)];
+  };
+
+  // Plan first so each model's InstancedMesh gets an exact capacity.
+  const plan = [];
+  const perModel = new Array(carTemplates.length).fill(0);
+  for (let i = 0; i < TRAFFIC_COUNT; i++) {
+    const template = pick();
+    const modelIndex = carTemplates.indexOf(template);
+    perModel[modelIndex]++;
+    plan.push({
+      modelIndex,
+      axis: i % 2 === 0 ? 'x' : 'z',
+      road: roadLaneCenters[Math.floor(rng() * roadLaneCenters.length)],
+      direction: rng() > .5 ? 1 : -1,
+      progress: (rng() * 2 - 1) * (CITY_HALF + 26),
+      speed: 8 + rng() * 8
+    });
   }
+  const models = carTemplates
+    .map((t, i) => ({ wrapper: normalizedInstance(t.scene, t.length, 'footprint'), capacity: perModel[i], i }))
+    .filter(m => m.capacity > 0);
+  const slot = new Map(models.map((m, index) => [m.i, index]));
+  carRenderer = new InstancedTraffic(world, models);
+
+  for (const car of plan) {
+    // Cars are plain Object3Ds (never added to the scene): gameplay code moves
+    // `.position`, and InstancedTraffic turns them into instance matrices.
+    const object = new THREE.Object3D();
+    const laneOffset = car.direction * 3.6;
+    if (car.axis === 'x') {
+      object.position.set(car.progress, roadAsphaltY, car.road + laneOffset);
+      object.rotation.y = car.direction > 0 ? Math.PI / 2 : -Math.PI / 2;
+    } else {
+      object.position.set(car.road - laneOffset, roadAsphaltY, car.progress);
+      object.rotation.y = car.direction > 0 ? 0 : Math.PI;
+    }
+    carRenderer.register(slot.get(car.modelIndex), object);
+    trafficActors.push({ object, axis: car.axis, direction: car.direction, road: car.road, speed: car.speed });
+  }
+  carRenderer.update(camera.position, TRAFFIC_RENDER_RADIUS);
 }
 
 function buildCrowd(templates) {
-  for (let i = 0; i < 48; i++) {
+  for (let i = 0; i < CROWD_COUNT; i++) {
     const data = templates[i % templates.length];
     const npc = normalizedInstance(data.scene, 1.72, 'height', true);
     const axis = i % 2 === 0 ? 'x' : 'z';
     const road = roadLaneCenters[Math.floor(rng() * roadLaneCenters.length)];
     const direction = rng() > .5 ? 1 : -1;
     const sidewalkOffset = (rng() > .5 ? 1 : -1) * 13.2;
-    const progress = (rng() * 2 - 1) * 404;
+    const progress = (rng() * 2 - 1) * (CITY_HALF + 20);
     const startX = axis === 'x' ? progress : road + sidewalkOffset;
     const startZ = axis === 'x' ? road + sidewalkOffset : progress;
     const startSurface = getBaseSurfaceHeightAt(startX, startZ);
@@ -755,38 +1008,45 @@ function buildCrowd(templates) {
   }
 }
 
+const TRAFFIC_WRAP = CITY_HALF + 36;
+const CROWD_WRAP = CITY_HALF + 30;
+
 function updateCityLife(dt, time) {
   if (spaceState.active || reentryState.active) return;
   for (const car of trafficActors) {
     const p = car.object.position;
     if (car.axis === 'x') {
       p.x += car.direction * car.speed * dt;
-      if (p.x > 420) p.x = -420;
-      if (p.x < -420) p.x = 420;
+      if (p.x > TRAFFIC_WRAP) p.x = -TRAFFIC_WRAP;
+      if (p.x < -TRAFFIC_WRAP) p.x = TRAFFIC_WRAP;
     } else {
       p.z += car.direction * car.speed * dt;
-      if (p.z > 420) p.z = -420;
-      if (p.z < -420) p.z = 420;
+      if (p.z > TRAFFIC_WRAP) p.z = -TRAFFIC_WRAP;
+      if (p.z < -TRAFFIC_WRAP) p.z = TRAFFIC_WRAP;
     }
   }
 
   const camPos = camera.position;
+  carRenderer?.update(camPos, TRAFFIC_RENDER_RADIUS);
 
   for (const npc of npcActors) {
     const p = npc.object.position;
     if (npc.axis === 'x') {
       p.x += npc.direction * npc.speed * dt;
-      if (p.x > 414) p.x = -414;
-      if (p.x < -414) p.x = 414;
+      if (p.x > CROWD_WRAP) p.x = -CROWD_WRAP;
+      if (p.x < -CROWD_WRAP) p.x = CROWD_WRAP;
     } else {
       p.z += npc.direction * npc.speed * dt;
-      if (p.z > 414) p.z = -414;
-      if (p.z < -414) p.z = 414;
+      if (p.z > CROWD_WRAP) p.z = -CROWD_WRAP;
+      if (p.z < -CROWD_WRAP) p.z = CROWD_WRAP;
     }
 
-    // Distance Culling: Skip heavy height calculations and IK for distant NPCs
+    // Distance culling: far pedestrians are hidden (skipping their skinned
+    // draw + shadow) and skip height/IK work entirely.
     const distSq = (p.x - camPos.x) ** 2 + (p.z - camPos.z) ** 2;
-    if (distSq > 22500) continue; // 150^2
+    const near = distSq <= NPC_RENDER_RADIUS * NPC_RENDER_RADIUS;
+    if (npc.object.visible !== near) npc.object.visible = near;
+    if (!near) continue;
 
     const surface = getBaseSurfaceHeightAt(p.x, p.z);
     const bob = npc.mixer ? 0 : Math.max(0, Math.sin(time * 7 + npc.phase) * .025);
@@ -1576,6 +1836,14 @@ function damageEnemy(amount, source=null, knockback=0, label='') {
   enemyHitInvuln = .10;
   enemyFlash = 1;
   const heavy = amount >= 40;
+  {
+    const hitPoint = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.4, 0));
+    const away = source ? hitPoint.clone().sub(source).setY(0) : new THREE.Vector3(0, 0, 1);
+    if (away.lengthSq() < .001) away.set(0, 0, 1);
+    away.normalize();
+    bursts.sparks(hitPoint, { count: heavy ? 38 : 16, power: heavy ? 1.3 : .8, dir: away, cone: 1 });
+    if (heavy) bursts.dust({ x: hitPoint.x, y: enemyRoot.position.y + .1, z: hitPoint.z }, { count: 14, radius: 2, power: .8 });
+  }
   requestHitStop(heavy ? .11 : .065);
   spawnDamageNumber(enemyRoot.position.clone().add(new THREE.Vector3(0, 2.5, 0)), amount, heavy ? 'heavy' : 'hit');
   updateCombatHUD();
@@ -2075,7 +2343,9 @@ const rings = [];
 const ringPositions = [
   [0,70,35], [55,95,-45], [115,130,-120], [35,185,-230], [-90,135,-300],
   [-165,100,-210], [-150,65,-80], [-80,115,30], [15,150,110], [125,90,85],
-  [220,120,15], [210,180,-125]
+  [220,120,15], [210,180,-125],
+  [380,120,300], [-420,150,260], [520,95,-120], [-560,175,-340],
+  [300,170,-520], [-300,125,480], [600,140,430], [20,230,-620]
 ];
 const ringMat = new THREE.MeshStandardMaterial({ color: 0x3be8ff, emissive: 0x0b9fc0, emissiveIntensity: 4, roughness: .25, metalness: .15 });
 for (const p of ringPositions) {
@@ -2088,18 +2358,21 @@ for (const p of ringPositions) {
 }
 document.querySelector('#total').textContent = rings.length;
 
-const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, transparent:true, opacity:.72, depthWrite:false });
-const clouds = [];
-for (let i=0;i<32;i++) {
-  const c = new THREE.Group();
-  for (let j=0;j<4;j++) {
-    const s = new THREE.Mesh(new THREE.SphereGeometry(8+rng()*14, 10, 8), cloudMat);
-    s.position.set((j-1.5)*11,(rng()-.5)*4,(rng()-.5)*8); c.add(s);
-  }
-  c.position.set((rng()-.5)*900, 130+rng()*180, (rng()-.5)*900);
-  scene.add(c);
-  clouds.push(c);
-}
+// V18 atmosphere: a shader sky dome, soft sprite clouds, bird flocks and the
+// pooled particle system used by impacts and contrails.
+const skyDome = new SkyDome({
+  sunDirection: SUN_OFFSET,
+  horizon: DAY_FOG_COLOR,
+  mid: new THREE.Color(0x6fb4ec),
+  zenith: new THREE.Color(0x2d78d2),
+  space: SPACE_BACKGROUND
+});
+scene.add(skyDome.mesh);
+const cloudLayer = new CloudLayer(scene, rng, { extent: CITY_HALF + 520 });
+const cloudMat = cloudLayer.material;
+const clouds = cloudLayer.clouds;
+const birds = new BirdFlocks(scene, rng, { extent: CITY_HALF * .85 });
+const bursts = new ParticleBursts(scene);
 
 // ---------------------------------------------------------------------------
 // ORBIT / SPACE TRANSITION V14
@@ -2567,7 +2840,7 @@ function updateSpaceEnvironment(dt, time) {
   } else {
     scene.fog = worldFog;
     worldFog.color.copy(DAY_FOG_COLOR).lerp(SPACE_BACKGROUND, blend * 0.75);
-    worldFog.density = THREE.MathUtils.lerp(0.00145, 0.00006, blend);
+    worldFog.density = THREE.MathUtils.lerp(DAY_FOG_DENSITY, 0.00006, blend);
   }
 
   hemi.intensity = THREE.MathUtils.lerp(2.15, 0.32, blend);
@@ -2578,8 +2851,11 @@ function updateSpaceEnvironment(dt, time) {
   moonPivot.visible = spaceState.active || (reentryState.active && !reentryState.cityPhase);
   sunVisual.visible = spaceGroup.visible;
   sunGlow.visible = spaceGroup.visible;
-  cloudMat.opacity = 0.72 * (1 - blend);
-  for (const cloud of clouds) cloud.visible = !spaceState.active && (!reentryState.active || reentryState.cityPhase) && cloudMat.opacity > 0.02;
+  cloudMat.opacity = cloudLayer.baseOpacity * (1 - blend);
+  const skyLifeVisible = !spaceState.active && (!reentryState.active || reentryState.cityPhase) && cloudMat.opacity > 0.02;
+  cloudLayer.setVisible(skyLifeVisible);
+  birds.setVisible(skyLifeVisible);
+  skyDome.update(time, blend);
 
   if (spaceState.active || (reentryState.active && !reentryState.cityPhase)) {
     earth.rotation.y += dt * 0.035;
@@ -2841,6 +3117,8 @@ function handleEventCommand(command) {
     if (!point) return;
     emergencyPresentation.pulseImpact(point, { strength:1.8 });
     const impactPosition = new THREE.Vector3(point.x, point.y, point.z);
+    spawnGroundImpactFx(impactPosition, 3.2);
+    bursts.embers(impactPosition, { count: 44, radius: 12 });
     const impactDistance = hero.position.distanceTo(impactPosition);
     const impactShake = THREE.MathUtils.lerp(.08, 1.0, 1 - THREE.MathUtils.smoothstep(impactDistance, 35, 300));
     cameraShake = Math.max(cameraShake, impactShake);
@@ -2998,7 +3276,7 @@ function iceBreathOccluded(origin, spot) {
   if (distance <= .01) return false;
   const ray = new THREE.Ray(origin, delta.normalize());
   const hit = new THREE.Vector3();
-  for (const box of buildingColliders) {
+  for (const box of collidersAlong(origin, target)) {
     const point = ray.intersectBox(box, hit);
     if (!point) continue;
     const hitDistance = point.distanceTo(origin);
@@ -3166,7 +3444,7 @@ function heatVisionRaycast() {
 
   // Buildings occlude the beam.
   const hit = new THREE.Vector3();
-  for (const box of buildingColliders) {
+  for (const box of collidersAlong(origin, origin.clone().addScaledVector(dir, distance))) {
     const point = ray.intersectBox(box, hit);
     if (!point) continue;
     const d = point.distanceTo(origin);
@@ -3218,6 +3496,7 @@ function updateHeatVisionGeometry(intensity=1) {
   beamCoreL.material.opacity = beamCoreR.material.opacity = .72 + intensity * .28;
 
   heatImpact.position.copy(endpoint);
+  if (hit.target !== 'air') bursts.sparks(endpoint, { count: 2, power: .55, dir: { x: 0, y: 1, z: 0 }, cone: 1.3, color: [1, .5, .18] });
   heatImpact.visible = hit.target !== 'air';
   heatImpact.material.opacity = hit.target === 'air' ? 0 : .45 + intensity * .45;
   heatImpact.scale.setScalar(.7 + intensity * .9 + Math.sin(timer.getElapsed() * 28) * .12);
@@ -3356,7 +3635,7 @@ function firstLeapObstacleDistance(start, direction, maxDistance) {
   const ray = new THREE.Ray(start.clone().add(new THREE.Vector3(0, 1.05, 0)), direction);
   const hit = new THREE.Vector3();
   let nearest = maxDistance;
-  for (const box of buildingColliders) {
+  for (const box of collidersAlong(ray.origin, ray.origin.clone().addScaledVector(direction, maxDistance), 1.5)) {
     // The leap may clear street props, but it must not tunnel through buildings.
     const expanded = box.clone().expandByVector(new THREE.Vector3(.65, .25, .65));
     const point = ray.intersectBox(expanded, hit);
@@ -3449,6 +3728,17 @@ function startLeapAttack() {
   showMessage(plan.lockedEnemy ? 'LEAP ATTACK · JASON' : 'LEAP ATTACK', 520);
 }
 
+// Dust ring, flying debris and sparks for big ground impacts. `point.y` must be
+// the surface height at the impact.
+function spawnGroundImpactFx(point, power = 1) {
+  const ground = { x: point.x, y: point.y + .05, z: point.z };
+  bursts.dust(ground, { count: Math.round(22 + 24 * power), radius: 3 + 2.5 * power, power });
+  bursts.debris(ground, { count: Math.round(10 + 10 * power), power });
+  bursts.sparks({ x: ground.x, y: ground.y + .3, z: ground.z }, {
+    count: Math.round(10 + 10 * power), power: .8 + power * .3, dir: { x: 0, y: 1, z: 0 }, cone: 1.4
+  });
+}
+
 function triggerLeapImpact() {
   if (leapAttack.impacted) return;
   leapAttack.impacted = true;
@@ -3460,6 +3750,7 @@ function triggerLeapImpact() {
   wave.rotation.x = -Math.PI / 2;
   wave.position.copy(origin).add(new THREE.Vector3(0, .06, 0));
   impactEffects.push({ object:wave, life:.48, maxLife:.48, poolItem: fx });
+  spawnGroundImpactFx(origin, 1.3);
 
   cameraShake = Math.max(cameraShake, .74);
 
@@ -3598,6 +3889,7 @@ function startTakeoff() {
   hero.position.y = Math.max(hero.position.y, surface + GROUND_EPS);
   transitionStartY = hero.position.y;
   transitionTargetY = surface + TAKEOFF_CLEARANCE;
+  bursts.dust({ x: hero.position.x, y: surface + .05, z: hero.position.z }, { count: 20, radius: 2.6, power: .8 });
   velocity.set(0, 0, 0);
 
   playOneShot(['C003_Flying_Intro', 'C003_Jump_01'], 'DECOLAGEM!', 1.05, null, 'takeoff');
@@ -3640,6 +3932,7 @@ function landingImpact() {
   fx.object.rotation.set(-Math.PI / 2, 0, 0);
   fx.object.position.set(hero.position.x, landingSurfaceY + .08, hero.position.z);
   impactEffects.push({ object:fx.object, life:.32, maxLife:.32, poolItem:fx, scale:.45 });
+  bursts.dust({ x: hero.position.x, y: landingSurfaceY + .05, z: hero.position.z }, { count: 18, radius: 2.4, power: .75 });
 }
 
 function toggleFlight() {
@@ -3683,6 +3976,7 @@ function resetGame() {
   superPunchImpactTimer = -1;
   normalPunchImpactTimer = -1;
   cameraShake = 0;
+  bursts.clear();
   boostCharge = 0; wasSupersonic = false; sonicBoomCooldown = 0;
   heatVisionHeat = 0; heatVisionOverheated = false; stopHeatVision(false);
   heatVisionAnimPhase = 'idle'; heatVisionAnimSource = 'air'; airStopState = 'moving';
@@ -3736,6 +4030,7 @@ function triggerSuperPunchImpact(applyEnemyDamage=true) {
   wave.position.copy(origin);
   wave.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
   impactEffects.push({ object: wave, life: .42, maxLife: .42, poolItem: fx });
+  bursts.sparks(origin, { count: 24, power: 1.2, dir, cone: .9 });
 
   const pushActors = [...trafficActors, ...npcActors];
   for (const actor of pushActors) {
@@ -3823,6 +4118,8 @@ speedLines.frustumCulled = false;
 scene.add(speedLines);
 
 const sonicEffects = [];
+const contrailPoint = new THREE.Vector3();
+let contrailClock = 0;
 function spawnSonicBoom(dir) {
   sonicBoomCooldown = 1.4;
   cameraShake = Math.max(cameraShake, .42);
@@ -3881,6 +4178,14 @@ function updateSupersonicEffects(dt, time, speed, boosting) {
   if (supersonic && !wasSupersonic && sonicBoomCooldown <= 0) spawnSonicBoom(flightForward);
   wasSupersonic = supersonic;
 
+  contrailClock -= dt;
+  if (flightMachine.state === 'flying' && speed > 150 && contrailClock <= 0) {
+    contrailClock = supersonic ? .016 : .04;
+    contrailPoint.copy(hero.position).addScaledVector(flightForward, -1.15);
+    contrailPoint.y += 1.0;
+    bursts.contrail(contrailPoint, { size: supersonic ? 1.5 : .9, alpha: supersonic ? .42 : .28 });
+  }
+
   const visibility = flightMachine.state === 'flying' ? THREE.MathUtils.smoothstep(speed, 85, MACH_ONE) : 0;
   speedLineMat.opacity = visibility * (supersonic ? .82 : .42);
   if (visibility > .001) {
@@ -3931,7 +4236,7 @@ function resolveHeroBuildingCollision(previousPosition) {
   const ray = new THREE.Ray(from, delta.clone().normalize());
   let nearest = null;
   const hit = new THREE.Vector3();
-  for (const box of buildingColliders) {
+  for (const box of collidersAlong(from, to, 1.5)) {
     const expanded = box.clone().expandByVector(new THREE.Vector3(.45,.2,.45));
     const point = ray.intersectBox(expanded, hit);
     if (!point) continue;
@@ -3944,6 +4249,12 @@ function resolveHeroBuildingCollision(previousPosition) {
   hero.position.set(safe.x, safe.y-1, safe.z);
   velocity.multiplyScalar(impactSpeed > MACH_ONE ? .16 : .22);
   cameraShake = Math.max(cameraShake, impactSpeed > MACH_ONE ? .75 : .32);
+  if (impactSpeed > 90) {
+    const fast = impactSpeed > MACH_ONE;
+    bursts.debris(nearest.point, { count: fast ? 34 : 14, power: fast ? 1.5 : 1 });
+    bursts.dust(nearest.point, { count: fast ? 34 : 16, radius: fast ? 4.5 : 3, power: 1, tint: [.62, .62, .64] });
+    bursts.sparks(nearest.point, { count: fast ? 30 : 12, power: 1.1 });
+  }
   if (impactSpeed > 120) showMessage(impactSpeed > MACH_ONE ? 'IMPACTO SUPERSÔNICO' : 'IMPACTO', 520);
 }
 
@@ -4220,7 +4531,7 @@ function updateCamera(dt) {
     const ray = new THREE.Ray(target, rayVector.clone().normalize());
     let nearest = wantedDistance;
     const hit = new THREE.Vector3();
-    for (const box of buildingColliders) {
+    for (const box of collidersAlong(target, desired, 1)) {
       const point = ray.intersectBox(box, hit);
       if (!point) continue;
       const d = point.distanceTo(target);
@@ -4274,7 +4585,61 @@ function heroFootLockWeight() {
   return 0;
 }
 
+// Sky, sun shadow, ambient life, particles and post-processing state. Runs after
+// the camera so everything that follows it uses the final camera position.
+function updateAtmosphere(dt, time) {
+  updateSunShadow();
+  shadowClock += dt;
+  if (shadowClock >= shadowInterval) {
+    shadowClock = 0;
+    renderer.shadowMap.needsUpdate = true;
+  }
+  skyDome.follow(camera);
+  cloudLayer.update(dt);
+  birds.update(dt, time);
+  bursts.update(dt, camera, renderer.domElement.height);
+  const speed = velocity.length();
+  const flying = flightMachine.state === 'flying';
+  const reentryHeat = reentryState.active ? reentryState.intensity : 0;
+  postFx.setState({
+    speed01: Math.max(flying ? THREE.MathUtils.smoothstep(speed, 110, SUPERSONIC_MAX_SPEED) : 0, reentryHeat),
+    impact01: THREE.MathUtils.clamp(cameraShake, 0, 1),
+    heat01: reentryHeat
+  }, dt);
+}
+
+const MAX_PIXEL_RATIO = Math.min(devicePixelRatio, 1.6);
+const adaptiveResolution = new URLSearchParams(location.search).get('adaptive') === 'off'
+  ? null
+  : new AdaptiveResolution({ min: .65, max: MAX_PIXEL_RATIO, targetMs: 19 });
+let lastFrameStamp = 0;
+let degradeLevel = 0;
+
+// Last resort once resolution scaling bottoms out: drop bloom, then refresh
+// the shadow map less often.
+function degradeQuality() {
+  if (!adaptiveResolution || degradeLevel >= 2) return;
+  const wanted = adaptiveResolution.floorHits >= 5 ? 2 : adaptiveResolution.floorHits >= 2 ? 1 : 0;
+  if (wanted <= degradeLevel) return;
+  degradeLevel = wanted;
+  if (degradeLevel >= 1) postFx.setBloom(false);
+  if (degradeLevel >= 2) shadowInterval = 1 / 15;
+  console.info(`[perf] qualidade reduzida (nível ${degradeLevel})`);
+}
+
+function applyPixelRatio(ratio) {
+  renderer.setPixelRatio(ratio);
+  renderer.setSize(innerWidth, innerHeight);
+  postFx.setSize(innerWidth, innerHeight, ratio);
+}
+
 function animate(timestamp) {
+  if (adaptiveResolution && lastFrameStamp && !document.hidden) {
+    const ratio = adaptiveResolution.sample(timestamp - lastFrameStamp);
+    if (ratio !== null) applyPixelRatio(ratio);
+    degradeQuality();
+  }
+  lastFrameStamp = timestamp;
   timer.update(timestamp);
   // Never step backwards: a negative delta would destabilise every damped lerp.
   const dt = THREE.MathUtils.clamp(timer.getDelta(), 0, .033);
@@ -4319,7 +4684,8 @@ function animate(timestamp) {
   updateSpaceEnvironment(dt, time);
   updateCamera(dt);
   updateImpactEffects(dt);
-  renderer.render(scene,camera);
+  updateAtmosphere(dt, time);
+  postFx.render();
   requestAnimationFrame(animate);
 }
 requestAnimationFrame(animate);
@@ -4327,8 +4693,7 @@ requestAnimationFrame(animate);
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth,innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio,1.6));
+  applyPixelRatio(adaptiveResolution ? adaptiveResolution.ratio : MAX_PIXEL_RATIO);
 });
 
 function lerpAngle(a,b,t) {
@@ -4364,7 +4729,8 @@ function optimizeWorldInstancing() {
   world.traverse(obj => {
     if (obj.isMesh && !obj.isInstancedMesh && !obj.isSkinnedMesh && !ignoreSet.has(obj)) {
       const matKeys = Array.isArray(obj.material) ? obj.material.map(m=>m.uuid).join() : obj.material.uuid;
-      const key = obj.geometry.uuid + '_' + matKeys + '_' + obj.castShadow + '_' + obj.receiveShadow;
+      const chunk = chunkKey(obj.matrixWorld.elements[12], obj.matrixWorld.elements[14], INSTANCE_CHUNK);
+      const key = obj.geometry.uuid + '_' + matKeys + '_' + obj.castShadow + '_' + obj.receiveShadow + '_' + chunk;
       let list = groups.get(key);
       if (!list) { list = []; groups.set(key, list); }
       list.push(obj);
@@ -4384,6 +4750,13 @@ function optimizeWorldInstancing() {
     });
     world.add(instanced);
   }
+  // Everything left in the world except pedestrians never moves: stop the
+  // renderer recomputing ~thousands of matrices every frame.
+  world.traverse(obj => {
+    if (obj === world || ignoreSet.has(obj)) return;
+    obj.updateMatrix();
+    obj.matrixAutoUpdate = false;
+  });
   console.log('City Instancing: Converted ' + groups.size + ' unique meshes into InstancedMeshes.');
 }
 
@@ -4394,6 +4767,7 @@ function triggerLeapAttackImpact() {
   wave.rotation.x = -Math.PI / 2;
   wave.position.copy(origin).add(new THREE.Vector3(0, .06, 0));
   impactEffects.push({ object:wave, life:.48, maxLife:.48, poolItem: fx });
+  spawnGroundImpactFx(origin, 1.3);
 
   cameraShake = Math.max(cameraShake, .74);
 
@@ -4418,7 +4792,7 @@ function triggerLeapAttackImpact() {
 // Optional debug handle for automated/browser inspection: open index.html?debug.
 if (new URLSearchParams(location.search).has('debug')) {
   window.__sky = {
-    THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene,
+    THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio,
     get mixer() { return mixer; },
     get enemyMixer() { return enemyMixer; },
     get importedHero() { return importedHero; },
@@ -4444,7 +4818,7 @@ if (new URLSearchParams(location.search).has('debug')) {
       const focus = target.position.clone().add(new THREE.Vector3(0, 1, 0));
       camera.position.copy(focus).add(new THREE.Vector3(dx, dy, dz));
       camera.lookAt(focus);
-      renderer.render(scene, camera);
+      postFx.render();
     },
     // Advances the real game loop by `ms` without scheduling another frame,
     // so inspection also works when the tab is hidden and rAF is throttled.

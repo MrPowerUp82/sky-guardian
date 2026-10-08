@@ -33,38 +33,54 @@ A licença CC BY do upload não deve ser confundida com uma cessão dos direitos
 
 - Fonte oficial: https://kenney.nl/assets/city-kit-commercial
 - Licença indicada pelo autor: Creative Commons CC0
-- Uso: prédios comerciais e arranha-céus.
-- Runtime: mirror `Hidencod/tge-assets`.
+- Uso: prédios comerciais, arranha-céus (`building-a…n`, `building-skyscraper-a…e`) e prédios `low-detail-*` para o horizonte decorativo.
+- Runtime (V18): cópia local em `assets/kenney/city-kit-commercial/`.
+
+## Subúrbios — Kenney City Kit (Suburban)
+
+- Fonte oficial: https://kenney.nl/assets/city-kit-suburban
+- Licença indicada pelo autor: Creative Commons CC0
+- Uso: casas `building-type-a…l` e árvores `tree-large` / `tree-small` nos bairros residenciais e subúrbios.
+- Runtime (V18): cópia local em `assets/kenney/city-kit-suburban/`.
 
 ## Ruas, postes e semáforos — Kenney City Kit (Roads)
 
 - Fonte oficial: https://kenney.nl/assets/city-kit-roads
 - Licença indicada pelo autor: Creative Commons CC0
-- Runtime: mirror `Hidencod/tge-assets`.
+- Uso: ruas, cruzamentos, postes (`light-curved`, `light-square`), semáforos, cones, barreiras de obra, caçamba e placa de rua.
+- Runtime (V18): cópia local em `assets/kenney/city-kit-roads/`.
 
 ## Veículos — Kenney Car Kit
 
 - Fonte oficial: https://kenney.nl/assets/car-kit
 - Licença indicada pelo autor: Creative Commons CC0
-- Uso: sedan, sedan esportivo, SUV, táxi e viatura.
+- Uso: sedans, SUVs, táxi, viatura, hatch esportivo, van, entrega, caminhão, caminhão de lixo, ambulância e caminhão de bombeiros.
+- Runtime (V18): cópia local em `assets/kenney/car-kit/`.
 
 ## Vegetação — Kenney Nature Kit
 
 - Fonte oficial: https://kenney.nl/assets/nature-kit
 - Licença indicada pelo autor: Creative Commons CC0
+- Uso: árvores, arbustos, flores e pedras (parques, calçadas e quintais).
+- Runtime (V18): cópia local em `assets/kenney/nature-kit/`.
 
 ## NPCs — Kenney Mini Characters
 
 - Fonte oficial: https://kenney.nl/assets/mini-characters
 - Licença indicada pelo autor: Creative Commons CC0
+- Uso: os 12 personagens (`female-a…f`, `male-a…f`) como pedestres.
+- Runtime (V18): cópia local em `assets/kenney/mini-characters/`.
 
-## Mirror dos GLBs Kenney
+## GLBs Kenney locais e mirror de reserva
 
-Os GLBs da cidade são carregados de:
-
-`https://raw.githubusercontent.com/Hidencod/tge-assets/main/packs/...`
+Desde a V18 os GLBs da cidade ficam em `assets/kenney/<pack>/…` (≈12 MB, CC0, baixados do mirror `Hidencod/tge-assets`). O jogo carrega o arquivo local primeiro e só usa o mirror
+`https://raw.githubusercontent.com/Hidencod/tge-assets/main/packs/...` se um arquivo local estiver ausente.
 
 O catálogo do mirror registra os packs utilizados como Kenney / `CC0-1.0`.
+
+## Efeitos V18
+
+Céu, sol, nuvens, pássaros, partículas e pós-processamento (bloom, borrão radial de velocidade, aberração cromática, vinheta) são procedurais — não usam assets externos.
 
 ## Jason | MultiVersus — boss local
 
