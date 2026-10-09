@@ -23,6 +23,8 @@ Clips mantidos:
 - `C003_N_Attack_01`
 - `C003_Laser_Air`
 - `C003_Laser_Ground`
+- `C003_Laser_Ground_Start`, `C003_Laser_Ground_Loop`, `C003_Laser_Ground_Exit` (V18: cortados de `C003_Laser_Ground` com `tools/bake-subclips.mjs`)
+- `C003_Laser_Air_Start`, `C003_Laser_Air_Loop`, `C003_Laser_Air_Exit` (V18: cortados de `C003_Laser_Air`)
 - `C003_Land`
 - `C003_Jump_01`
 - `C003_Run_01`
@@ -90,3 +92,10 @@ Céu, sol, nuvens, pássaros, partículas e pós-processamento (bloom, borrão r
 - Arquivo runtime neste projeto: `assets/jason/Jason-game.glb` (~11,5 MB, 8 animações)
 - Clips mantidos: `Jason_Nav_Idle`, `Jason_Walk`, `Jason_Attack_Combo_01`, `Jason_Attack_Combo_02`, `Jason_Attack_Combo_03`, `Jason_Attack_Dash_Shoulder_Bash`, `Jason_HR_Deflect`, `Jason_HR_Flyback_B_Enter`.
 - O arquivo é usado apenas no protótipo de fã; mantenha o crédito e confirme a licença vigente na página do Sketchfab antes de redistribuição.
+
+## The Flash — personagem jogável (V20)
+
+- Modelo: **The Flash Rigged (HatchXR)** por nitwit.friends — https://sketchfab.com/3d-models/the-flash-rigged-hatchxr-1261cf0905be44c09f278533d2149c4c — licença **CC BY 4.0**.
+- Runtime: `assets/flash/the-flash.glb` (~1,5 MB, 5,9 mil triângulos, rig Mixamo de 66 ossos).
+- Clips originais: `stand`, `walk`, `walkLeft`, `walkRight`, `run`, `strafeLeft`, `strafeRight`, `jumpUp`, `jumpDown`, `punch` (combo de 8 socos), `waveHello` e a pose `mixamo.com` (T-pose). O jogo usa `stand`, `walk`, `run`, `jumpUp`, `jumpDown` e `punch`.
+- Não há clips de voo, laser ou sopro: as habilidades exclusivas usam esses clips com velocidade e rotação procedurais.

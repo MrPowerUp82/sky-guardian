@@ -1,0 +1,8 @@
+[
+  { "source": "C003_Laser_Ground", "name": "C003_Laser_Ground_Start", "start": 0,  "end": 18 },
+  { "source": "C003_Laser_Ground", "name": "C003_Laser_Ground_Loop",  "start": 17, "end": 26, "loop": true, "blend": 3 },
+  { "source": "C003_Laser_Ground", "name": "C003_Laser_Ground_Exit",  "start": 25, "end": 37 },
+  { "source": "C003_Laser_Air",    "name": "C003_Laser_Air_Start",    "start": 0,  "end": 10 },
+  { "source": "C003_Laser_Air",    "name": "C003_Laser_Air_Loop",     "start": 10, "end": 24, "loop": true, "blend": 4 },
+  { "source": "C003_Laser_Air",    "name": "C003_Laser_Air_Exit",     "start": 19, "end": 25 }
+]

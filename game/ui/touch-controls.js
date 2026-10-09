@@ -139,6 +139,10 @@ export function createTouchControls({ root = document.body, look, onMenu } = {})
 
   return {
     element: ui,
+    // Relabels the action buttons for the active character: { heat: 'TEMPO', ... }.
+    setLabels(labels = {}) {
+      for (const [id, el] of buttonEls) if (labels[id]) el.textContent = labels[id];
+    },
     // Releases everything (used when the menu opens so nothing stays stuck).
     releaseAll() {
       endStick();

@@ -217,6 +217,74 @@
         }
       ]
     },
+    "heatVisionGroundStart": {
+      "clip": "C003_Laser_Ground_Start",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "events": [
+        {
+          "id": "laser-hit",
+          "time": 0.1,
+          "type": "heatVision",
+          "label": "VISÃO DE CALOR",
+          "damage": 18,
+          "knockback": 0.45,
+          "radius": 1.2
+        }
+      ]
+    },
+    "heatVisionGroundLoop": {
+      "clip": "C003_Laser_Ground_Loop",
+      "speed": 1.0,
+      "loop": true,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "heatVisionGroundExit": {
+      "clip": "C003_Laser_Ground_Exit",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "heatVisionAirStart": {
+      "clip": "C003_Laser_Air_Start",
+      "speed": 1.05,
+      "loop": false,
+      "fade": 0.06,
+      "removeRootMotion": false,
+      "events": [
+        {
+          "id": "laser-hit",
+          "time": 0.1,
+          "type": "heatVision",
+          "label": "VISÃO DE CALOR",
+          "damage": 18,
+          "knockback": 0.45,
+          "radius": 1.2
+        }
+      ]
+    },
+    "heatVisionAirLoop": {
+      "clip": "C003_Laser_Air_Loop",
+      "speed": 1.0,
+      "loop": true,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
+    "heatVisionAirExit": {
+      "clip": "C003_Laser_Air_Exit",
+      "speed": 1.0,
+      "loop": false,
+      "fade": 0.08,
+      "removeRootMotion": false,
+      "events": []
+    },
     "hurt": {
       "clip": "C003_Idle_01",
       "speed": 1,

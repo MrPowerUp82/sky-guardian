@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 
 const v3 = v => new THREE.Vector3(v?.x||0,v?.y||0,v?.z||0);
-const METEOR_RADIUS = 2.4;
+// Big enough to read as a threat from across the city (it used to be 2.4 m).
+const METEOR_RADIUS = 6.2;
 
 function disposeEmergencyObject(root) {
   root?.traverse?.(node => {
@@ -46,10 +47,11 @@ export class EmergencyPresentation {
 
   _makeMeteor() {
     const group=new THREE.Group();
-    const core=new THREE.Mesh(new THREE.IcosahedronGeometry(METEOR_RADIUS,2),new THREE.MeshStandardMaterial({color:0x38241d,emissive:0xff3c0a,emissiveIntensity:2.3,roughness:.88}));
+    const core=new THREE.Mesh(new THREE.IcosahedronGeometry(METEOR_RADIUS,3),new THREE.MeshStandardMaterial({color:0x38241d,emissive:0xff3c0a,emissiveIntensity:2.3,roughness:.88}));
+    core.scale.set(1,.9,1.08);
     group.add(core);
     const glow=new THREE.Mesh(new THREE.SphereGeometry(METEOR_RADIUS*1.35,18,12),new THREE.MeshBasicMaterial({color:0xff6a25,transparent:true,opacity:.16,blending:THREE.AdditiveBlending,depthWrite:false})); group.add(glow);
-    const trailGeo=new THREE.BufferGeometry(); const arr=new Float32Array(16*3); trailGeo.setAttribute('position',new THREE.BufferAttribute(arr,3));
+    const trailGeo=new THREE.BufferGeometry(); const arr=new Float32Array(24*3); trailGeo.setAttribute('position',new THREE.BufferAttribute(arr,3));
     const trail=new THREE.Line(trailGeo,new THREE.LineBasicMaterial({color:0xff8a3d,transparent:true,opacity:.72,blending:THREE.AdditiveBlending})); group.add(trail);
     group.userData.trailArray=arr; this.root.add(group); return group;
   }
@@ -61,8 +63,9 @@ export class EmergencyPresentation {
     const pos=v3(snapshot.position); view.position.copy(pos);
     const impact=v3(snapshot.impactPoint); const dir=this._tmp.copy(pos).sub(impact).normalize();
     const arr=view.userData.trailArray;
-    for(let i=0;i<arr.length/3;i++){const d=i*.85;arr[i*3]=dir.x*d;arr[i*3+1]=dir.y*d;arr[i*3+2]=dir.z*d;}
+    for(let i=0;i<arr.length/3;i++){const d=i*3.4;arr[i*3]=dir.x*d;arr[i*3+1]=dir.y*d;arr[i*3+2]=dir.z*d;}
     view.children[2].geometry.attributes.position.needsUpdate=true;
+    view.children[0].rotation.y+=.012; view.children[0].rotation.x+=.007;
   }
 
   removeMeteor(id,{exploded=false}={}) { const v=this.meteors.get(id); if(v){this.root.remove(v);disposeEmergencyObject(v);this.meteors.delete(id);} if(exploded&&v)this.pulseAirburst(v.position); }
@@ -117,7 +120,7 @@ export class EmergencyPresentation {
     if(!s){this.hudRoot.className='';this.primary&&(this.primary.textContent='');this.secondary&&(this.secondary.textContent='');return;}
     this.hudRoot.className=`active ${s.type==='meteor'?'meteor':'fire'}`;
     const target=s.position||s.impactPoint; const distance=target?Math.round(v3(target).distanceTo(v3(heroPosition))):null;
-    if(s.type==='meteor' && (s.state==='warning'||s.state==='falling')) { if(this.primary)this.primary.textContent='METEORO DETECTADO'; if(this.secondary)this.secondary.textContent=`${distance??'—'} m · IMPACTO EM ${Math.max(0,s.eta||0).toFixed(1)}s`; }
+    if(s.type==='meteor' && (s.state==='warning'||s.state==='falling')) { if(this.primary)this.primary.textContent='METEORO DETECTADO'; if(this.secondary)this.secondary.textContent=`${distance??'—'} m · IMPACTO EM ${Math.max(0,s.eta||0).toFixed(1)}s · DESTRUA: SUPERVELOCIDADE · SUPER SOCO`; }
     else if(s.type==='meteor'){if(this.primary)this.primary.textContent='IMPACTO · APAGUE OS INCÊNDIOS';if(this.secondary)this.secondary.textContent=`${s.fireIds?.length||0} FOCOS VINCULADOS`;}
     else {if(this.primary)this.primary.textContent='INCÊNDIO EM PRÉDIO';if(this.secondary)this.secondary.textContent=`${distance!=null?distance+' m · ':''}${s.fireIds?.length||0} FOCOS VINCULADOS`;}
   }

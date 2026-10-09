@@ -4,9 +4,9 @@ import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { remapVerticalTracks, heroClipVerticalMode, HERO_GROUND_AUTHORED_CLIPS } from './hero-motion.js';
 import { HeroFlightState } from './hero-state.js';
 import { loadCharacterConfig, slotConfig, hitboxById, queueSlotEvents } from './animation-config-runtime.js';
-import { EmergencyPresentation } from './game/events/emergency-presentation.js';
+import { EmergencyPresentation, METEOR_RADIUS } from './game/events/emergency-presentation.js';
 import { FireSystem } from './game/fire/fire-system.js';
-import { IceBreathController, ICE_BREATH_TUNING } from './game/powers/ice-breath-controller.js';
+import { IceBreathController, ICE_BREATH_TUNING, iceConeContains } from './game/powers/ice-breath-controller.js';
 import { MeteorEvent } from './game/events/meteor-event.js';
 import { BuildingFireEvent, selectBuildingTarget, createBuildingFireSpots } from './game/events/building-fire-event.js';
 import { DynamicEventSystem } from './game/events/dynamic-event-system.js';
@@ -20,6 +20,12 @@ import { InstancedTraffic } from './game/world/instanced-traffic.js';
 import { AdaptiveResolution } from './game/fx/adaptive-quality.js';
 import { isTouchDevice, qualityProfile } from './game/ui/device.js';
 import { createTouchControls } from './game/ui/touch-controls.js';
+import { SCHEMA, SHADOW_LEVELS, FOG_SCALE, ACTOR_SCALE, PARTICLE_DENSITY, defaultSettings, applyChange, loadSettings, saveSettings } from './game/settings/graphics-settings.js';
+import { GameMap } from './game/ui/game-map.js';
+import { createPauseMenu } from './game/ui/pause-menu.js';
+import { CHARACTERS, getCharacter, isCharacterId, loadCharacterId, saveCharacterId } from './game/characters/registry.js';
+import { FlashController, prepareFlashClips } from './game/characters/flash-controller.js';
+import { SpeedForceFx } from './game/fx/speed-force-fx.js';
 
 
 // Phones and tablets get the touch UI plus a lighter profile (smaller map,
@@ -49,6 +55,7 @@ const DAY_BACKGROUND = new THREE.Color(0x8fcfff);
 const DAY_FOG_COLOR = new THREE.Color(0xb7ddf7);
 const SPACE_BACKGROUND = new THREE.Color(0x020713);
 const DAY_FOG_DENSITY = 0.00085;
+let fogDensityScale = 1; // graphics setting: view distance
 const worldFog = new THREE.FogExp2(DAY_FOG_COLOR.clone(), DAY_FOG_DENSITY);
 scene.background = DAY_BACKGROUND.clone();
 scene.fog = worldFog;
@@ -63,7 +70,7 @@ sun.castShadow = true;
 // The shadow frustum follows the hero (see updateSunShadow), so a tight 2k map
 // stays sharp no matter how large the city is.
 const SUN_OFFSET = new THREE.Vector3(-120, 210, 90);
-const SUN_SHADOW_RANGE = PROFILE.shadowRange;
+let SUN_SHADOW_RANGE = PROFILE.shadowRange;
 sun.position.copy(SUN_OFFSET);
 sun.shadow.mapSize.set(PROFILE.shadowMap, PROFILE.shadowMap);
 sun.shadow.camera.left = -SUN_SHADOW_RANGE;
@@ -112,6 +119,8 @@ const HERO_CONFIG_FALLBACK = {
     leapAttack:{clip:'C003_LeapAttack',speed:1.0,loop:false,fade:.06,events:[]}, leapAttackLand:{clip:'C003_LeapAttackLand',speed:1.0,loop:false,fade:.055,events:[]},
     heatVision:{clip:'C003_Laser_Air',speed:1.05,loop:false,fade:.06,events:[]},
     heatVisionGround:{clip:'C003_Laser_Ground',speed:1.0,loop:false,fade:.06,events:[]}
+    ,heatVisionGroundStart:{clip:'C003_Laser_Ground_Start',speed:1.0,loop:false,fade:.06,events:[]}, heatVisionGroundLoop:{clip:'C003_Laser_Ground_Loop',speed:1.0,loop:true,fade:.08,events:[]}, heatVisionGroundExit:{clip:'C003_Laser_Ground_Exit',speed:1.0,loop:false,fade:.08,events:[]}
+    ,heatVisionAirStart:{clip:'C003_Laser_Air_Start',speed:1.05,loop:false,fade:.06,events:[]}, heatVisionAirLoop:{clip:'C003_Laser_Air_Loop',speed:1.0,loop:true,fade:.08,events:[]}, heatVisionAirExit:{clip:'C003_Laser_Air_Exit',speed:1.0,loop:false,fade:.08,events:[]}
     ,iceBreathGroundStart:{clip:'C003_IceBreath',speed:1,loop:false,fade:.06,events:[]}, iceBreathGroundLoop:{clip:'C003_IceBreath_Loop',speed:1,loop:true,fade:.08,events:[]}, iceBreathGroundExit:{clip:'C003_IceBreath_IntoIdle',speed:1,loop:false,fade:.08,events:[]}
     ,iceBreathAirStart:{clip:'C003_Air_IceBreath',speed:1,loop:false,fade:.06,events:[]}, iceBreathAirLoop:{clip:'C003_Air_IceBreath_Loop',speed:1,loop:true,fade:.08,events:[]}, iceBreathAirExit:{clip:'C003_Air_IceBreath_IntoIdle',speed:1,loop:false,fade:.08,events:[]}
   }, hitboxes: []
@@ -153,6 +162,7 @@ const CITY_HALF = (ROAD_COUNT - 1) / 2 * ROAD_SPACING;
 const WORLD_LIMIT = CITY_HALF + 46;
 const CITY_EDGE = CITY_HALF + 32;
 const TILE = 32;
+const MAP_HALF = WORLD_LIMIT + 60;
 // Instances are grouped per spatial chunk so each InstancedMesh gets a tight
 // bounding sphere and the camera and sun-shadow frusta can cull whole districts.
 const INSTANCE_CHUNK = 128;
@@ -234,8 +244,8 @@ const CITY_ASSETS = {
 };
 
 const TRAFFIC_COUNT = PROFILE.traffic;
-const TRAFFIC_RENDER_RADIUS = PROFILE.trafficRadius;
-const NPC_RENDER_RADIUS = PROFILE.npcRadius;
+let TRAFFIC_RENDER_RADIUS = PROFILE.trafficRadius;
+let NPC_RENDER_RADIUS = PROFILE.npcRadius;
 let carRenderer = null;
 const CROWD_COUNT = PROFILE.crowd;
 const trafficActors = [];
@@ -263,6 +273,7 @@ const buildingTargets = [];
 let buildingTargetSerial = 0;
 const colliderGrid = new Map();
 const blockSurfaceRegions = [];
+let gameMap = null;
 const surfaceGrid = new Map();
 
 function getGridKey(x, z) {
@@ -475,6 +486,7 @@ async function buildCC0City() {
     optimizeWorldInstancing();
 
     cityLoaded = true;
+    initGameMap();
     console.info(`[city] ${Math.round(performance.now() - buildStart)} ms · ${buildingColliders.length} buildings`);
     const cityLabel = 'Cidade V18 CC0 · 15×15 avenidas · centro, bairros e subúrbios · tráfego + NPCs';
     setAssetStatus(heroReady && enemyReady ? `${cityLabel} · Superman + Jason` : heroReady ? `${cityLabel} · Superman local` : cityLabel);
@@ -482,7 +494,27 @@ async function buildCC0City() {
     console.warn('Falha ao carregar cidade CC0; usando fallback:', err);
     makeFallbackCity();
     cityLoaded = true;
+    initGameMap();
     setAssetStatus('Falha de rede · cidade fallback ativa');
+  }
+}
+
+// Renders the static layer of the map once the city (or its fallback) exists.
+function initGameMap() {
+  try {
+    const roadWidth = Math.min(TILE, Number.isFinite(roadCurbOffset) ? roadCurbOffset * 2 + 4 : 24);
+    gameMap = new GameMap({
+      half: MAP_HALF,
+      limit: WORLD_LIMIT,
+      roads: roadLaneCenters,
+      roadWidth,
+      blocks: blockSurfaceRegions,
+      buildings: buildingColliders.map(b => ({ minX: b.min.x, maxX: b.max.x, minZ: b.min.z, maxZ: b.max.z, height: b.max.y }))
+    });
+    gameMap.buildStatic();
+  } catch (err) {
+    console.warn('Falha ao montar o mapa:', err);
+    gameMap = null;
   }
 }
 
@@ -723,7 +755,8 @@ function buildBuildings(t) {
       pad.position.set(bx, .01, bz);
       pad.receiveShadow = true;
       world.add(pad);
-      const region = { minX: bx - 32.5, maxX: bx + 32.5, minZ: bz - 32.5, maxZ: bz + 32.5, y: BLOCK_PAD_SURFACE_Y };
+      const kind = isPark ? 'park' : isPlaza ? 'plaza' : (residential || suburb) ? 'lawn' : 'paved';
+      const region = { minX: bx - 32.5, maxX: bx + 32.5, minZ: bz - 32.5, maxZ: bz + 32.5, y: BLOCK_PAD_SURFACE_Y, kind };
       blockSurfaceRegions.push(region);
       const rMinGX = Math.floor(region.minX / 64), rMaxGX = Math.floor(region.maxX / 64);
       const rMinGZ = Math.floor(region.minZ / 64), rMaxGZ = Math.floor(region.maxZ / 64);
@@ -1100,6 +1133,12 @@ const modelOrientation = new THREE.Group();
 modelOrientation.rotation.y = -Math.PI / 2;
 heroVisual.add(modelOrientation);
 
+// The Flash lives beside Superman under heroVisual; only one of them is visible.
+// Mixamo rigs already face +Z, so no axis conversion is needed (unlike Superman).
+const flashPivot = new THREE.Group();
+flashPivot.visible = false;
+heroVisual.add(flashPivot);
+
 let importedHero = null;
 let mixer = null;
 let currentAction = null;
@@ -1111,12 +1150,14 @@ let currentOnceAction = null;
 let currentOnceListener = null;
 let heroReady = false;
 let heroGroundRig = null;
+let supermanRig = null;
 const heroBoneMap = new Map();
 let heroEventQueue = [];
 let heroActiveSlot = '';
 let heatVisionHoldLoopAir = null;
 let heatVisionHoldLoopGround = null;
 let heatVisionAnimPhase = 'idle';
+let heatVisionExitAction = null;
 let heatVisionAnimSource = 'air';
 let airStopState = 'moving';
 const AIR_STOP_TRIGGER_SPEED = 4.2;
@@ -1212,7 +1253,8 @@ gltfLoader.load(CHARACTER_URL, async gltf => {
   modelOrientation.add(importedHero);
   heroBoneMap.clear();
   importedHero.traverse(obj => { if (obj.isBone) heroBoneMap.set(obj.name, obj); });
-  heroGroundRig = createFootGrounding(importedHero, hero);
+  supermanRig = createFootGrounding(importedHero, hero);
+  if (!flashActive()) heroGroundRig = supermanRig;
   fallback.visible = false;
 
   mixer = new THREE.AnimationMixer(importedHero);
@@ -1483,6 +1525,16 @@ function updateAnimation(speed, boosted) {
     cancelCurrentOneShot(.06);
     airStopState = 'moving';
   }
+  if (heatVisionAnimPhase === 'exit') {
+    if (currentOnceAction === heatVisionExitAction && heatVisionExitAction) {
+      // The exit pose lets go as soon as the player moves.
+      if (!movementIntent) return;
+      clearHeroOnceListener();
+    }
+    heatVisionExitAction = null;
+    heatVisionAnimPhase = 'idle';
+    if (!actionLocked) currentAnimName = '';
+  }
   if (actionLocked || heatVisionActive || iceBreathController.active) return;
 
   let slotName = 'idle';
@@ -1609,11 +1661,13 @@ let enemyStats = enemyLevelStats(1);
 let enemyRespawnTimer = -1;
 let enemyEnraged = false;
 let enemyFlash = 0;
+let enemyChill = 0;      // 1 right after an ice breath hit, fades over chillSeconds
 let enemyDeathFall = 0;
 const enemyPoise = new EnemyPoise();
 const enemyFlashMaterials = [];
 const ENEMY_FLASH_COLOR = new THREE.Color(0xfff1e0);
 const ENEMY_ENRAGE_COLOR = new THREE.Color(0x5a0400);
+const ENEMY_CHILL_COLOR = new THREE.Color(0x1d5fd0);
 
 let playerHealth = 100;
 const playerMaxHealth = 100;
@@ -1933,6 +1987,7 @@ function pickEnemySpawnPoint() {
 }
 
 function resetEnemy(spawnPoint = ENEMY_SPAWN) {
+  enemyChill = 0;
   enemyRespawnTimer = -1;
   enemyEnraged = false;
   enemyFlash = 0;
@@ -1994,7 +2049,7 @@ function damagePlayer(amount, fromDirection) {
     playerDead = true;
     actionLocked = true;
     velocity.set(0,0,0);
-    showMessage('SUPERMAN DERROTADO · reiniciando...', 1800);
+    showMessage(`${getCharacter(activeCharacterId).name.toUpperCase()} DERROTADO · reiniciando...`, 1800);
     const serial = ++enemyRespawnSerial;
     setTimeout(() => {
       if (playerDead && serial === enemyRespawnSerial) resetGame();
@@ -2199,7 +2254,7 @@ function updateEnemyFlash(dt) {
   enemyFlash = Math.max(0, enemyFlash - dt * 7);
   const rage = enemyEnraged && enemyAlive ? .5 + Math.sin(timer.getElapsed() * 6) * .15 : 0;
   for (const { mat, base } of enemyFlashMaterials) {
-    mat.emissive.copy(base).lerp(ENEMY_ENRAGE_COLOR, rage).lerp(ENEMY_FLASH_COLOR, enemyFlash * .7);
+    mat.emissive.copy(base).lerp(ENEMY_ENRAGE_COLOR, rage).lerp(ENEMY_CHILL_COLOR, enemyChill * .6).lerp(ENEMY_FLASH_COLOR, enemyFlash * .7);
   }
 }
 
@@ -2383,6 +2438,7 @@ const skyDome = new SkyDome({
   space: SPACE_BACKGROUND
 });
 scene.add(skyDome.mesh);
+let ambientEnabled = true; // graphics setting: clouds and birds
 const cloudLayer = new CloudLayer(scene, rng, { extent: CITY_HALF + 520, count: PROFILE.clouds });
 const cloudMat = cloudLayer.material;
 const clouds = cloudLayer.clouds;
@@ -2855,7 +2911,7 @@ function updateSpaceEnvironment(dt, time) {
   } else {
     scene.fog = worldFog;
     worldFog.color.copy(DAY_FOG_COLOR).lerp(SPACE_BACKGROUND, blend * 0.75);
-    worldFog.density = THREE.MathUtils.lerp(DAY_FOG_DENSITY, 0.00006, blend);
+    worldFog.density = THREE.MathUtils.lerp(DAY_FOG_DENSITY * fogDensityScale, 0.00006, blend);
   }
 
   hemi.intensity = THREE.MathUtils.lerp(2.15, 0.32, blend);
@@ -2868,8 +2924,8 @@ function updateSpaceEnvironment(dt, time) {
   sunGlow.visible = spaceGroup.visible;
   cloudMat.opacity = cloudLayer.baseOpacity * (1 - blend);
   const skyLifeVisible = !spaceState.active && (!reentryState.active || reentryState.cityPhase) && cloudMat.opacity > 0.02;
-  cloudLayer.setVisible(skyLifeVisible);
-  birds.setVisible(skyLifeVisible);
+  cloudLayer.setVisible(skyLifeVisible && ambientEnabled);
+  birds.setVisible(skyLifeVisible && ambientEnabled);
   skyDome.update(time, blend);
 
   if (spaceState.active || (reentryState.active && !reentryState.cityPhase)) {
@@ -2954,7 +3010,11 @@ const emergencyPresentation = new EmergencyPresentation({
 let emergencyEventSerial = 0;
 let iceBreathAction = null;
 const recentBuildingFireIds = new Map();
-const METEOR_COLLISION_RADIUS = 2.4;
+// Same size as the rendered rock, so what you see is what you can hit.
+const METEOR_COLLISION_RADIUS = METEOR_RADIUS;
+// Flying through a falling meteor at or above this speed (m/s, ~860 km/h, reached
+// within a second of Shift+W) shatters it; slower and it is a solid obstacle.
+const METEOR_SMASH_SPEED = 240;
 const dynamicEventSystem = new DynamicEventSystem({
   rng: eventRng,
   factories: {
@@ -2964,8 +3024,17 @@ const dynamicEventSystem = new DynamicEventSystem({
 });
 
 addEventListener('keydown', e => {
+  // P / Esc pause (Esc is usually swallowed by pointer lock; see pointerlockchange).
+  if (e.code === 'KeyP' || e.code === 'Escape') { if (!e.repeat) togglePause(); return; }
+  if (e.code === 'KeyM') { if (!e.repeat) togglePause('map'); return; }
+  if (paused) return;
   keys[e.code] = true;
   if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) e.preventDefault();
+  if (flashActive()) {
+    if (e.code === 'KeyR') resetGame();
+    flash.onKeyDown(e);
+    return;
+  }
   if (e.repeat && ['KeyF', 'KeyE', 'KeyX', 'KeyC', 'KeyQ', 'KeyG', 'KeyR', 'Space'].includes(e.code)) return;
 
   if (e.code === 'KeyR') resetGame();
@@ -2982,6 +3051,7 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => {
   keys[e.code] = false;
+  if (flashActive()) { flash.onKeyUp(e); return; }
   if (e.code === 'KeyQ') stopHeatVision(false);
   if (e.code === 'KeyG') stopIceBreath();
 });
@@ -3011,10 +3081,7 @@ function enterFullscreenLandscape() {
 const helpPanel = document.querySelector('#help');
 const touchControls = IS_TOUCH ? createTouchControls({
   look: lookBy,
-  onMenu: () => {
-    touchControls.releaseAll();
-    helpPanel.classList.remove('hidden');
-  }
+  onMenu: () => openPause()
 }) : null;
 renderer.domElement.addEventListener('click', () => {
   if (document.querySelector('#help').classList.contains('hidden')) lockPointer();
@@ -3026,7 +3093,9 @@ document.querySelector('#play').addEventListener('click', e => {
   if (IS_TOUCH) enterFullscreenLandscape();
 });
 document.addEventListener('pointerlockchange', () => {
-  if (!document.pointerLockElement && document.querySelector('#help').classList.contains('hidden')) showMessage('Clique na tela para continuar', 1200);
+  // Losing the lock (Esc, alt-tab) opens the pause menu instead of leaving the
+  // game running with a free cursor.
+  if (!document.pointerLockElement && !paused && !IS_TOUCH && document.querySelector('#help').classList.contains('hidden')) openPause();
 });
 document.addEventListener('mousemove', e => {
   if (!document.pointerLockElement) return;
@@ -3113,7 +3182,7 @@ function buildMeteorImpactFireDescriptors(eventId, point, requestedCount) {
   const maxAttempts = Math.max(18, count * 12);
   for (let attempt = 0; attempt < maxAttempts && out.length < count; attempt++) {
     const angle = eventRng() * Math.PI * 2;
-    const radius = randomBetween(7, 22);
+    const radius = randomBetween(9, 30);
     const x = THREE.MathUtils.clamp(point.x + Math.cos(angle) * radius, -CITY_EDGE + 3, CITY_EDGE - 3);
     const z = THREE.MathUtils.clamp(point.z + Math.sin(angle) * radius, -CITY_EDGE + 3, CITY_EDGE - 3);
     if (used.some(p => Math.hypot(p.x - x, p.z - z) < 3.2)) continue;
@@ -3150,20 +3219,33 @@ function pushCityActorsFrom(point, radius = 24, strength = 14) {
   }
 }
 
+// A shattered meteor: fireball, flying rock, embers and a shockwave that scales
+// with how close the hero is.
+function spawnMeteorShatterFx(position, supersonic) {
+  const at = { x: position.x, y: position.y, z: position.z };
+  bursts.sparks(at, { count: 90, power: 3.2, color: [1, .6, .2] });
+  bursts.debris(at, { count: 46, power: 2.6, spread: 2.2 });
+  bursts.embers(at, { count: 50, radius: 14 });
+  bursts.dust(at, { count: 36, radius: 9, power: 2.4, tint: [.55, .4, .3] });
+  const distance = hero.position.distanceTo(new THREE.Vector3(at.x, at.y, at.z));
+  cameraShake = Math.max(cameraShake, THREE.MathUtils.lerp(supersonic ? .9 : .55, .12, THREE.MathUtils.smoothstep(distance, 20, 260)));
+  if (supersonic) requestHitStop(.12);
+}
+
 function handleEventCommand(command) {
   if (!command) return;
   const event = eventById(command.eventId);
   if (command.type === 'meteor-impact') {
     const point = command.point || event?.impactPoint;
     if (!point) return;
-    emergencyPresentation.pulseImpact(point, { strength:1.8 });
+    emergencyPresentation.pulseImpact(point, { strength:3.4 });
     const impactPosition = new THREE.Vector3(point.x, point.y, point.z);
-    spawnGroundImpactFx(impactPosition, 3.2);
-    bursts.embers(impactPosition, { count: 44, radius: 12 });
+    spawnGroundImpactFx(impactPosition, 4.6);
+    bursts.embers(impactPosition, { count: 70, radius: 18 });
     const impactDistance = hero.position.distanceTo(impactPosition);
     const impactShake = THREE.MathUtils.lerp(.08, 1.0, 1 - THREE.MathUtils.smoothstep(impactDistance, 35, 300));
     cameraShake = Math.max(cameraShake, impactShake);
-    pushCityActorsFrom(point, 27, 16);
+    pushCityActorsFrom(point, 40, 20);
     const requested = Math.min(Number(command.requestedFireCount) || 3, fireSystem.remainingCapacity());
     const descriptors = buildMeteorImpactFireDescriptors(command.eventId, point, requested);
     const fireIds = fireSystem.addSpots(descriptors);
@@ -3175,7 +3257,8 @@ function handleEventCommand(command) {
     emergencyPresentation.pulseAirburst(command.position);
     emergencyPresentation.removeMeteor(command.eventId, { exploded:false });
     event?.dispose?.();
-    showMessage('EVENTO CONCLUÍDO · METEORO INTERCEPTADO', 1400);
+    spawnMeteorShatterFx(command.position, meteorInterceptMethod === 'supersonic');
+    showMessage(meteorInterceptMethod === 'supersonic' ? 'METEORO PULVERIZADO · SUPERVELOCIDADE!' : 'EVENTO CONCLUÍDO · METEORO INTERCEPTADO', 1700);
     return;
   }
   if (command.type === 'meteor-resolved') {
@@ -3191,19 +3274,21 @@ function handleEventCommand(command) {
   }
 }
 
+let meteorInterceptMethod = 'superPunch';
 function tryInterceptActiveMeteor(method, origin, radius = 0, speed = 0) {
   const meteor = dynamicEventSystem.getActiveEvents().find(event => event.type === 'meteor' && event.state === 'falling');
   if (!meteor || !origin) return false;
   const snapshot = meteor.getSnapshot();
   const meteorPosition = new THREE.Vector3(snapshot.position.x, snapshot.position.y, snapshot.position.z);
   if (origin.distanceTo(meteorPosition) > Math.max(0, radius) + METEOR_COLLISION_RADIUS) return false;
-  const commands = meteor.tryIntercept({ method, speed, machOne:MACH_ONE });
+  const commands = meteor.tryIntercept({ method, speed, machOne:METEOR_SMASH_SPEED });
+  meteorInterceptMethod = method;
   for (const command of commands) handleEventCommand(command);
   return commands.length > 0;
 }
 
 function trySupersonicMeteorSweep(previousPosition, currentPosition, speed) {
-  if (speed < MACH_ONE) return false;
+  if (speed < METEOR_SMASH_SPEED) return false;
   const meteor = dynamicEventSystem.getActiveEvents().find(event => event.type === 'meteor' && event.state === 'falling');
   if (!meteor) return false;
   const snapshot = meteor.getSnapshot();
@@ -3213,7 +3298,9 @@ function trySupersonicMeteorSweep(previousPosition, currentPosition, speed) {
   if (lenSq < 1e-8) return false;
   const t = THREE.MathUtils.clamp(center.clone().sub(previousPosition).dot(segment) / lenSq, 0, 1);
   const closest = previousPosition.clone().addScaledVector(segment, t);
-  return tryInterceptActiveMeteor('supersonic', closest, .9, speed);
+  // At this speed the hero drags a shock cone, so a near miss is enough to
+  // shatter the rock (it is 6 m wide, plus 4 m of shock around the hero).
+  return tryInterceptActiveMeteor('supersonic', closest, 4, speed);
 }
 
 function iceBreathSlotName(kind, variant) {
@@ -3354,6 +3441,7 @@ function updateIceBreath(dt) {
     rate: ICE_BREATH_TUNING.coolingRate,
     occluded: spot => iceBreathOccluded(origin, spot)
   });
+  applyIceBreathDamage(origin, direction, dt);
   emergencyPresentation.setIceBreath({ active:true, origin, direction, intensity:affected.length ? 1 : .76 });
 }
 
@@ -3552,17 +3640,56 @@ function hideHeatVision() {
   heatImpactLight.intensity = 0;
 }
 
+// Heat vision mirrors Ice Breath: an authored Start, a seamless Loop held while
+// Q is down, and an Exit back to neutral. Each has a ground and an air slot
+// (heatVision{Ground,Air}{Start,Loop,Exit}) that the animation configurator can
+// remap. If the baked clips are missing the old one-shot + tail loop is used.
+const HEAT_VISION_FALLBACK = {
+  Ground: { start:'C003_Laser_Ground_Start', loop:'C003_Laser_Ground_Loop', exit:'C003_Laser_Ground_Exit', legacy:['C003_Laser_Ground', 'C003_Laser_Air'] },
+  Air: { start:'C003_Laser_Air_Start', loop:'C003_Laser_Air_Loop', exit:'C003_Laser_Air_Exit', legacy:['C003_Laser_Air', 'C003_Laser_Ground'] }
+};
+
+function heatVisionSlotClip(kind) {
+  const variant = heatVisionAnimSource === 'ground' ? 'Ground' : 'Air';
+  const fallback = HEAT_VISION_FALLBACK[variant][kind];
+  const slotName = `heatVision${variant}${kind[0].toUpperCase()}${kind.slice(1)}`;
+  const cfg = heroSlot(slotName, { clip:fallback, speed:1, fade:kind === 'start' ? .06 : .08, loop:kind === 'loop' });
+  return { slotName, cfg, clip:findClip([cfg.clip, fallback]), legacy:HEAT_VISION_FALLBACK[variant].legacy };
+}
+
 function startHeatVisionHoldLoop() {
   if (!heatVisionActive || heatVisionOverheated || !mixer) return;
-  const loopClip = heatVisionAnimSource === 'ground' ? heatVisionHoldLoopGround : heatVisionHoldLoopAir;
-  if (!loopClip) return;
+  const { cfg, clip } = heatVisionSlotClip('loop');
+  if (clip) {
+    heatVisionAnimPhase = 'loop';
+    transitionTo(clip, { fade:cfg.fade, once:false, timeScale:cfg.speed });
+    return;
+  }
+  const legacyLoop = heatVisionAnimSource === 'ground' ? heatVisionHoldLoopGround : heatVisionHoldLoopAir;
+  if (!legacyLoop) return;
   heatVisionAnimPhase = 'loop';
-  transitionTo(loopClip, {
-    fade: .08,
-    once: false,
-    timeScale: .88,
-    loopMode: THREE.LoopPingPong
+  transitionTo(legacyLoop, { fade:.08, once:false, timeScale:.88, loopMode:THREE.LoopPingPong });
+}
+
+function beginHeatVisionExit() {
+  const { cfg, clip } = heatVisionSlotClip('exit');
+  if (!clip || !mixer || playerDead) {
+    // No exit clip: the next locomotion transition cross-fades out of the hold.
+    currentAnimName = '';
+    heatVisionAnimPhase = 'idle';
+    return;
+  }
+  heatVisionAnimPhase = 'exit';
+  const action = transitionTo(clip, {
+    fade:cfg.fade, once:true, timeScale:cfg.speed,
+    onFinished:() => {
+      if (heatVisionExitAction !== action) return;
+      heatVisionExitAction = null;
+      heatVisionAnimPhase = 'idle';
+      currentAnimName = '';
+    }
   });
+  heatVisionExitAction = action;
 }
 
 function startHeatVision() {
@@ -3575,16 +3702,18 @@ function startHeatVision() {
 
   heatVisionActive = true;
   heatDamageAccumulator = 0;
+  heatVisionExitAction = null;
   heatVisionAnimPhase = 'intro';
   heatVisionAnimSource = flightMachine.state === 'grounded' ? 'ground' : 'air';
 
   const grounded = heatVisionAnimSource === 'ground';
-  const slotName = grounded ? 'heatVisionGround' : 'heatVision';
-  const candidates = grounded ? ['C003_Laser_Ground', 'C003_Laser_Air'] : ['C003_Laser_Air', 'C003_Laser_Ground'];
+  const start = heatVisionSlotClip('start');
+  const slotName = start.clip ? start.slotName : (grounded ? 'heatVisionGround' : 'heatVision');
+  const candidates = start.clip ? [start.clip.name] : start.legacy;
   const fallbackSpeed = grounded ? 1.0 : 1.05;
   const started = playOneShot(candidates, '', fallbackSpeed, () => {
     if (heatVisionActive && keys.KeyQ && !heatVisionOverheated) startHeatVisionHoldLoop();
-    else heatVisionAnimPhase = 'idle';
+    else beginHeatVisionExit();
   }, slotName);
   if (!started) heatVisionAnimPhase = 'idle';
   document.body.classList.add('heat-vision-active');
@@ -3596,13 +3725,9 @@ function stopHeatVision(overheated=false) {
   hideHeatVision();
   document.body.classList.remove('heat-vision-active');
 
-  if (heatVisionAnimPhase === 'loop') {
-    // The next locomotion transition cross-fades out of the hold loop.
-    currentAnimName = '';
-    heatVisionAnimPhase = 'idle';
-  }
-  // If Q is released during the authored intro, allow that short one-shot to
-  // finish naturally. Its completion callback will not enter the hold loop.
+  // Released during the Start clip: let it finish; its completion callback
+  // goes straight to the Exit. Released during the Loop: leave it now.
+  if (heatVisionAnimPhase === 'loop') beginHeatVisionExit();
 
   if (overheated) {
     heatVisionOverheated = true;
@@ -3616,10 +3741,35 @@ function damageEnemyHeat(amount) {
   updateCombatHUD();
   cameraShake = Math.max(cameraShake, .035);
   if (enemyHealth <= 0) defeatEnemy();
+  else checkEnemyEnrage();
+}
+
+// Ice Breath hurts and chills Jason while he stands in the cone: damage arrives
+// in short ticks (with numbers and frost sparks) and his speed drops for a while.
+let iceDamageClock = 0;
+function applyIceBreathDamage(origin, direction, dt) {
+  if (!enemyReady || !enemyAlive) { iceDamageClock = 0; return; }
+  const center = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+  if (!iceConeContains(origin, direction, center, ICE_BREATH_TUNING, 1) || iceBreathOccluded(origin, { position: center })) {
+    iceDamageClock = 0;
+    return;
+  }
+  enemyChill = 1;
+  iceDamageClock += dt;
+  if (iceDamageClock < .2) return;
+  const amount = ICE_BREATH_TUNING.damagePerSecond * iceDamageClock;
+  iceDamageClock = 0;
+  damageEnemyHeat(amount);
+  spawnDamageNumber(center.clone().add(new THREE.Vector3(0, 1.3, 0)), amount, 'hit');
+  bursts.sparks(center, { count: 5, power: .5, color: [.55, .9, 1.4] });
 }
 
 function updateHeatVision(dt) {
   heatMessageCooldown = Math.max(0, heatMessageCooldown - dt);
+  if (heatVisionAnimPhase === 'exit' && (!heatVisionExitAction || currentOnceAction !== heatVisionExitAction)) {
+    heatVisionExitAction = null;
+    heatVisionAnimPhase = 'idle';
+  }
   if (heatVisionActive) {
     heatVisionHeat = Math.min(100, heatVisionHeat + dt * 24);
     const intensity = THREE.MathUtils.smoothstep(heatVisionHeat, 0, 70);
@@ -3992,6 +4142,7 @@ function toggleFlight() {
 
 function resetGame() {
   stopReentryAudio();
+  flash?.reset();
   iceBreathController.reset();
   dynamicEventSystem.reset();
   fireSystem.reset();
@@ -4020,7 +4171,7 @@ function resetGame() {
   bursts.clear();
   boostCharge = 0; wasSupersonic = false; sonicBoomCooldown = 0;
   heatVisionHeat = 0; heatVisionOverheated = false; stopHeatVision(false);
-  heatVisionAnimPhase = 'idle'; heatVisionAnimSource = 'air'; airStopState = 'moving';
+  heatVisionAnimPhase = 'idle'; heatVisionExitAction = null; heatVisionAnimSource = 'air'; airStopState = 'moving';
   leapAttack.active = false; leapAttack.phase = 'idle'; leapAttack.elapsed = 0; leapAttack.impacted = false;
   actionLocked = false;
   heroEventQueue = [];
@@ -4049,7 +4200,7 @@ function resetGame() {
   currentOnceAction = null; currentOnceListener = null;
   currentAnimName = '';
 
-  for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(1); }
+  for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(ring.userData.baseScale ?? 1); }
   document.querySelector('#score').textContent = 0;
   showMessage('Missão reiniciada', 850);
 }
@@ -4517,16 +4668,7 @@ function updateHero(dt, time) {
 
   updateAnimation(velocity.length(), boosted);
 
-  for (const ring of rings) {
-    if (ring.userData.collected) continue;
-    ring.rotation.z += dt * 1.3; ring.rotation.y += dt * .35;
-    ring.scale.setScalar(1 + Math.sin(time * 4 + ring.position.x) * .05);
-    if (hero.position.distanceTo(ring.position) < 7.5) {
-      ring.userData.collected = true; ring.visible = false; score++;
-      document.querySelector('#score').textContent = score;
-      showMessage(score === rings.length ? 'MISSÃO COMPLETA!' : `Anel ${score}/${rings.length}`, score === rings.length ? 2200 : 700);
-    }
-  }
+  updateRings(dt, time);
 
   const modeLabel = spaceState.active ? 'ÓRBITA BAIXA' : {
     grounded: 'NO SOLO',
@@ -4543,6 +4685,44 @@ function updateHero(dt, time) {
   if (!spaceState.active && flightMachine.state === 'flying' && hero.position.y >= SPACE_ENTRY_ALTITUDE && flightForward.y > 0.42) enterSpaceMode();
 }
 
+function updateRings(dt, time) {
+  for (const ring of rings) {
+    if (ring.userData.collected) continue;
+    if (ring.userData.mode === 'ground') ring.rotation.z += dt * 1.8;
+    else { ring.rotation.z += dt * 1.3; ring.rotation.y += dt * .35; }
+    ring.scale.setScalar((ring.userData.baseScale ?? 1) * (1 + Math.sin(time * 4 + ring.position.x) * .05));
+    if (hero.position.distanceTo(ring.position) < (ring.userData.collectRadius ?? 7.5)) {
+      ring.userData.collected = true; ring.visible = false; score++;
+      document.querySelector('#score').textContent = score;
+      showMessage(score === rings.length ? 'MISSÃO COMPLETA!' : `Anel ${score}/${rings.length}`, score === rings.length ? 2200 : 700);
+    }
+  }
+}
+
+// Superman's rings float in the sky; a runner cannot reach them, so for The Flash
+// they are snapped to the nearest avenue and brought down to street level.
+function layoutRings(mode) {
+  const nearest = value => roadLaneCenters.reduce((best, v) => Math.abs(v - value) < Math.abs(best - value) ? v : best, roadLaneCenters[0]);
+  for (const ring of rings) {
+    const base = ring.userData.base ||= { x: ring.position.x, y: ring.position.y, z: ring.position.z, rx: ring.rotation.x, ry: ring.rotation.y };
+    ring.userData.mode = mode;
+    if (mode === 'ground') {
+      const gx = nearest(base.x), gz = nearest(base.z);
+      const alongX = Math.abs(base.z - gz) <= Math.abs(base.x - gx);
+      ring.position.set(alongX ? base.x : gx, roadAsphaltY + 3.4, alongX ? gz : base.z);
+      ring.rotation.set(0, alongX ? Math.PI / 2 : 0, 0);
+      ring.userData.baseScale = .62;
+      ring.userData.collectRadius = 5.4;
+    } else {
+      ring.position.set(base.x, base.y, base.z);
+      ring.rotation.set(base.rx, base.ry, 0);
+      ring.userData.baseScale = 1;
+      ring.userData.collectRadius = 7.5;
+    }
+    ring.scale.setScalar(ring.userData.baseScale);
+  }
+}
+
 function updateCamera(dt) {
   // The center reticle is now a real flight direction. The camera looks far
   // ahead along the same yaw/pitch vector used by movement, while remaining a
@@ -4551,8 +4731,9 @@ function updateCamera(dt) {
   const target = hero.position.clone().add(new THREE.Vector3(0, 1.08, 0));
   const speed = velocity.length();
   const mach = speed / MACH_ONE;
+  const flashLevel = flashActive() ? flash.sprint01 : 0;
   const flightBoost = flightMachine.state === 'flying' && (keys.ShiftLeft || keys.ShiftRight) && keys.KeyW;
-  const dist = reentryState.active ? THREE.MathUtils.lerp(11.5, 16.5, reentryState.intensity) : (flightBoost ? THREE.MathUtils.lerp(10.5, 17.5, THREE.MathUtils.clamp(mach, 0, 1.25)) : 7.8);
+  const dist = reentryState.active ? THREE.MathUtils.lerp(11.5, 16.5, reentryState.intensity) : (flightBoost ? THREE.MathUtils.lerp(10.5, 17.5, THREE.MathUtils.clamp(mach, 0, 1.25)) : 7.8 + flashLevel * 4.5);
   cameraBack.copy(aim);
   cameraBack.y *= .34; // keep the camera usable at very steep climb/dive angles
   if (cameraBack.lengthSq() < .001) cameraBack.set(0,0,1);
@@ -4598,7 +4779,7 @@ function updateCamera(dt) {
     ? THREE.MathUtils.lerp(82, 104, reentryState.intensity)
     : flightMachine.state === 'flying'
       ? THREE.MathUtils.lerp(66, 96, THREE.MathUtils.smoothstep(speed, 90, SUPERSONIC_MAX_SPEED))
-      : 62;
+      : THREE.MathUtils.lerp(62, 94, flashLevel);
   camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, 1 - Math.exp(-5 * dt));
   camera.updateProjectionMatrix();
 }
@@ -4617,6 +4798,7 @@ function updateCharacterGrounding(dt) {
 
 // How strongly Superman's feet are pinned to the surface below him.
 function heroFootLockWeight() {
+  if (flashActive()) return flash.footLockWeight();
   if (playerDead) return 0;
   if (leapAttack.active) return leapAttack.phase === 'travel' ? 0 : 1;
   if (flightMachine.state === 'grounded') return 1;
@@ -4642,11 +4824,15 @@ function updateAtmosphere(dt, time) {
   const speed = velocity.length();
   const flying = flightMachine.state === 'flying';
   const reentryHeat = reentryState.active ? reentryState.intensity : 0;
+  const flashSprint = flashActive() ? flash.sprint01 * .95 : 0;
+  const flashSlow = flashActive() ? THREE.MathUtils.clamp((1 - flash.timeScale) / .78, 0, 1) : 0;
   postFx.setState({
-    speed01: Math.max(flying ? THREE.MathUtils.smoothstep(speed, 110, SUPERSONIC_MAX_SPEED) : 0, reentryHeat),
+    speed01: Math.max(flying ? THREE.MathUtils.smoothstep(speed, 110, SUPERSONIC_MAX_SPEED) : 0, reentryHeat, flashSprint),
     impact01: THREE.MathUtils.clamp(cameraShake, 0, 1),
-    heat01: reentryHeat
+    heat01: reentryHeat,
+    slow01: flashSlow
   }, dt);
+  document.body.classList.toggle('time-slow', flashSlow > .5);
 }
 
 const MAX_PIXEL_RATIO = PROFILE.maxPixelRatio;
@@ -4668,20 +4854,410 @@ function degradeQuality() {
   console.info(`[perf] qualidade reduzida (nível ${degradeLevel})`);
 }
 
+// ---------------------------------------------------------------------------
+// V19 GRAPHICS SETTINGS, PAUSE MENU, MAP AND MINIMAP
+// ---------------------------------------------------------------------------
+const settingsStore = (() => { try { return window.localStorage; } catch { return null; } })();
+let settings = loadSettings(settingsStore, IS_TOUCH);
+let paused = false;
+
+function setShadowQuality(mapSize, range) {
+  if (sun.shadow.mapSize.x !== mapSize) {
+    sun.shadow.mapSize.set(mapSize, mapSize);
+    sun.shadow.map?.dispose();
+    sun.shadow.map = null; // three allocates a new one at the next render
+  }
+  SUN_SHADOW_RANGE = range;
+  const cam = sun.shadow.camera;
+  cam.left = -range; cam.right = range; cam.top = range; cam.bottom = -range;
+  cam.updateProjectionMatrix();
+}
+
+// Pushes every graphics setting into the renderer; safe to call at any time.
+function applyGraphicsSettings() {
+  const s = settings;
+  const shadow = SHADOW_LEVELS[s.shadows];
+  sun.castShadow = !!shadow;
+  if (shadow) setShadowQuality(IS_TOUCH ? Math.min(shadow.map, 1024) : shadow.map, shadow.range);
+  renderer.shadowMap.needsUpdate = true;
+
+  postFx.setMsaa(s.msaa);
+  postFx.setBloom(s.bloom);
+  postFx.setCameraFx(s.cameraFx);
+
+  fogDensityScale = FOG_SCALE[s.viewDistance];
+  TRAFFIC_RENDER_RADIUS = PROFILE.trafficRadius * ACTOR_SCALE[s.actorDistance];
+  NPC_RENDER_RADIUS = PROFILE.npcRadius * ACTOR_SCALE[s.actorDistance];
+  ambientEnabled = s.ambient;
+  bursts.density = PARTICLE_DENSITY[s.particles];
+  if (!s.particles || s.particles === 'off') bursts.clear();
+
+  applyPixelRatio(s.resolutionAuto && adaptiveResolution ? adaptiveResolution.ratio : s.resolutionScale);
+  minimapEl.hidden = !s.minimap;
+  fpsEl.hidden = !s.showFps;
+}
+
+function changeSetting(key, value) {
+  settings = applyChange(settings, key, value, IS_TOUCH);
+  saveSettings(settingsStore, settings);
+  applyGraphicsSettings();
+  pauseMenu.refresh();
+}
+
+// --- map state shared by the minimap and the full map ---
+function buildMapState() {
+  const meteors = [];
+  for (const event of dynamicEventSystem.getActiveEvents()) {
+    if (event.type !== 'meteor' || ['intercepted', 'resolved'].includes(event.state)) continue;
+    const snap = event.getSnapshot();
+    meteors.push({ x: snap.impactPoint.x, z: snap.impactPoint.z, falling: snap.state === 'falling' || snap.state === 'warning' });
+  }
+  return {
+    hero: { x: hero.position.x, z: hero.position.z },
+    // Camera yaw decides "up" on the minimap; pitch must not affect it.
+    aim: { x: -Math.sin(yaw), z: -Math.cos(yaw) },
+    enemy: enemyAlive && enemyReady ? { x: enemyRoot.position.x, z: enemyRoot.position.z } : null,
+    rings: rings.filter(r => !r.userData.collected).map(r => [r.position.x, r.position.z]),
+    fires: fireSystem.getActiveSpots().map(spot => [spot.position.x, spot.position.z]),
+    meteors
+  };
+}
+
+const MINIMAP_SIZE = IS_TOUCH ? 94 : 172;
+const MINIMAP_METRES = IS_TOUCH ? 130 : 170;
+const minimapEl = document.createElement('div');
+minimapEl.id = 'minimap';
+const minimapCanvas = document.createElement('canvas');
+minimapCanvas.width = minimapCanvas.height = Math.round(MINIMAP_SIZE * 2);
+minimapEl.append(minimapCanvas);
+if (!IS_TOUCH) {
+  const label = document.createElement('span');
+  label.className = 'mm-label';
+  label.textContent = 'M · MAPA';
+  minimapEl.append(label);
+}
+minimapEl.addEventListener('pointerdown', e => { e.preventDefault(); if (!paused) openPause('map'); });
+if (IS_TOUCH) minimapEl.style.pointerEvents = 'auto';
+document.body.append(minimapEl);
+
+let minimapClock = 0;
+function updateMinimap(dtMs) {
+  const hideInSpace = spaceState.active || reentryState.active;
+  if (!settings.minimap) return;
+  if (minimapEl.hidden !== hideInSpace) minimapEl.hidden = hideInSpace;
+  if (hideInSpace || !gameMap?.ready) return;
+  minimapClock += dtMs;
+  if (minimapClock < (IS_TOUCH ? 66 : 33)) return;
+  minimapClock = 0;
+  gameMap.drawMinimap(minimapCanvas, buildMapState(), MINIMAP_METRES);
+}
+
+const fpsEl = document.createElement('div');
+fpsEl.id = 'fps-counter';
+fpsEl.hidden = true;
+document.body.append(fpsEl);
+let fpsMs = 0, fpsFrames = 0;
+function updateFps(dtMs) {
+  if (!settings.showFps || !(dtMs > 0)) return;
+  fpsMs += dtMs; fpsFrames++;
+  if (fpsMs >= 500) {
+    fpsEl.textContent = `${Math.round(fpsFrames * 1000 / fpsMs)} FPS · ${(fpsMs / fpsFrames).toFixed(1)} ms · ${renderer.getPixelRatio().toFixed(2)}x`;
+    fpsMs = 0; fpsFrames = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// V20 PLAYABLE CHARACTERS: SUPERMAN / THE FLASH
+// ---------------------------------------------------------------------------
+const FLASH_HEIGHT = 1.9;
+let activeCharacterId = 'superman';
+let flash = null;                 // FlashController once the model is loaded
+let flashFx = null;
+let flashRig = null;
+let flashLoadPromise = null;
+let flashLoading = false;
+let characterError = '';
+
+function flashActive() { return activeCharacterId === 'flash' && !!flash; }
+
+const hudMode = document.querySelector('#mode');
+const hudSpeed = document.querySelector('#speed');
+const hudMach = document.querySelector('#mach');
+let lastZap = 0;
+function playZap(volume = 1) {
+  const nowMs = performance.now();
+  if (nowMs - lastZap < 70) return;
+  lastZap = nowMs;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    window.__skyAudioCtx ||= new AudioCtx();
+    const ctx = window.__skyAudioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
+    const now = ctx.currentTime;
+    const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * .16), ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 2);
+    const noise = ctx.createBufferSource(); noise.buffer = buffer;
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1500;
+    const ng = ctx.createGain(); ng.gain.value = .13 * volume;
+    noise.connect(hp).connect(ng).connect(ctx.destination); noise.start(now);
+    const osc = ctx.createOscillator(); osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1400, now); osc.frequency.exponentialRampToValueAtTime(140, now + .18);
+    const og = ctx.createGain(); og.gain.setValueAtTime(.001, now); og.gain.exponentialRampToValueAtTime(.07 * volume, now + .01); og.gain.exponentialRampToValueAtTime(.0001, now + .2);
+    osc.connect(og).connect(ctx.destination); osc.start(now); osc.stop(now + .22);
+  } catch { /* audio is optional */ }
+}
+
+function activeMeteorPosition() {
+  const meteor = dynamicEventSystem.getActiveEvents().find(event => event.type === 'meteor' && event.state === 'falling');
+  if (!meteor) return null;
+  const snap = meteor.getSnapshot();
+  return new THREE.Vector3(snap.position.x, snap.position.y, snap.position.z);
+}
+
+function createFlashApi() {
+  return {
+    aim: out => getAimDirection(out),
+    yaw: () => yaw,
+    surfaceAt: getSurfaceHeightAt,
+    collidersAlong,
+    resolveCollision: resolveHeroBuildingCollision,
+    worldLimit: WORLD_LIMIT,
+    groundEps: GROUND_EPS,
+    enemy: () => ({ alive: enemyReady && enemyAlive, pos: enemyRoot.position }),
+    damageEnemy: (amount, source, knockback, label) => damageEnemy(amount, source, knockback, label),
+    enemyUnderAim: (range, radius) => enemyUnderAim(range, radius),
+    meteorPosition: activeMeteorPosition,
+    interceptMeteor: () => {
+      const position = activeMeteorPosition();
+      return position ? tryInterceptActiveMeteor('superPunch', position, 0, 0) : false;
+    },
+    pushActors: (point, radius, strength) => pushCityActorsFrom(point, radius, strength),
+    coolCone: (origin, dir, range, halfAngle, dt, rate) => fireSystem.applyCoolingCone({
+      origin, direction: dir, range, halfAngleDeg: halfAngle, dt, rate, occluded: spot => iceBreathOccluded(origin, spot)
+    }),
+    coolRadius: (point, radius, dt, rate) => fireSystem.applyCoolingSphere({ origin: point, radius, dt, rate }),
+    isDead: () => playerDead,
+    setInvuln: seconds => { playerInvuln = Math.max(playerInvuln, seconds); },
+    dodge,
+    DODGE_DURATION,
+    message: showMessage,
+    shake: amount => { cameraShake = Math.max(cameraShake, amount); },
+    flashBody,
+    dust: (position, count, radius) => bursts.dust({ x: position.x, y: position.y + .05, z: position.z }, { count, radius, power: .9 }),
+    zap: playZap,
+    ui: {
+      mode: text => { if (hudMode) hudMode.textContent = text; },
+      speed: text => { if (hudSpeed) hudSpeed.textContent = text; },
+      extra: text => { if (hudMach) hudMach.textContent = text; },
+      energy: (value, text, exhausted) => {
+        const fill = document.querySelector('#heat-fill');
+        const label = document.querySelector('#heat-text');
+        if (fill) fill.style.width = `${value}%`;
+        if (label) label.textContent = text;
+        document.body.classList.toggle('heat-overheated', !!exhausted);
+      }
+    }
+  };
+}
+
+function loadFlashModel() {
+  if (flash) return Promise.resolve(flash);
+  if (flashLoadPromise) return flashLoadPromise;
+  flashLoadPromise = new Promise((resolve, reject) => {
+    gltfLoader.load(getCharacter('flash').modelUrl, gltf => {
+      try {
+        const root = gltf.scene;
+        prepScene(root, { shadows: true });
+        root.traverse(obj => { if (obj.isSkinnedMesh) obj.frustumCulled = false; });
+        // Normalize: world height, feet on the pivot origin, centred.
+        const box = new THREE.Box3().setFromObject(root);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const scale = size.y > 0 ? FLASH_HEIGHT / size.y : 1;
+        root.scale.setScalar(scale);
+        root.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+        flashPivot.add(root);
+        flashPivot.updateMatrixWorld(true);
+
+        flashRig = createFootGrounding(root, hero);
+        const flashMixer = new THREE.AnimationMixer(root);
+        flashFx = new SpeedForceFx({ scene, model: root, bursts, resolution: renderer.getDrawingBufferSize(new THREE.Vector2()) });
+        flash = new FlashController({
+          hero, velocity, keys, pivot: flashPivot, model: root, mixer: flashMixer,
+          clips: prepareFlashClips(gltf.animations), crossfade: crossfadeAction,
+          fx: flashFx, bursts, api: createFlashApi()
+        });
+        flash.play('stand', { fade: 0 });
+        resolve(flash);
+      } catch (err) { reject(err); }
+    }, undefined, reject);
+  });
+  return flashLoadPromise;
+}
+
+// Everything that depends on who is being played.
+function applyCharacterPresentation() {
+  const def = getCharacter(activeCharacterId);
+  const isFlash = activeCharacterId === 'flash';
+  modelOrientation.visible = !isFlash;
+  flashPivot.visible = isFlash;
+  heroGroundRig = isFlash ? flashRig : supermanRig;
+  document.body.classList.toggle('char-flash', isFlash);
+  document.body.classList.remove('time-slow');
+  const title = document.querySelector('#hud .title');
+  if (title) title.textContent = `${def.name.toUpperCase()} // THREE.JS`;
+  const health = document.querySelector('#player-health');
+  if (health?.firstChild) health.firstChild.textContent = `Vida ${def.name}: `;
+  const rowLabel = document.querySelector('.power-row span');
+  if (rowLabel) rowLabel.textContent = def.energyLabel;
+  const heatText = document.querySelector('#heat-text');
+  if (heatText) heatText.textContent = 'PRONTA';
+  const fill = document.querySelector('#heat-fill');
+  if (fill) fill.style.width = isFlash ? '100%' : '0%';
+  if (!isFlash && hudMach) hudMach.textContent = 'Mach: —';
+  touchControls?.setLabels(def.touchLabels);
+  layoutRings(isFlash ? 'ground' : 'air');
+}
+
+function setActiveCharacter(id) {
+  activeCharacterId = id;
+  applyCharacterPresentation();
+}
+
+async function selectCharacter(id) {
+  if (!isCharacterId(id) || id === activeCharacterId || flashLoading) return;
+  characterError = '';
+  if (id === 'flash' && !flash) {
+    flashLoading = true;
+    pauseMenu.refresh();
+    try { await loadFlashModel(); }
+    catch (err) {
+      console.warn('Falha ao carregar The Flash:', err);
+      flashLoadPromise = null;
+      characterError = 'Não foi possível carregar o The Flash. Verifique assets/flash/the-flash.glb.';
+      flashLoading = false;
+      pauseMenu.refresh();
+      return;
+    }
+    flashLoading = false;
+  }
+  setActiveCharacter(id);
+  saveCharacterId(settingsStore, id);
+  resetGame();
+  showMessage(`${getCharacter(id).name.toUpperCase()}`, 1300);
+  if (paused) resumeGame();
+}
+
+function flashControlNodes() {
+  const def = getCharacter('flash');
+  const line = (key, name, desc) => {
+    const span = document.createElement('span');
+    const kbd = document.createElement('kbd'); kbd.textContent = key;
+    span.append(kbd, ` ${name}${desc ? ' — ' + desc : ''}`);
+    return span;
+  };
+  const keys = document.createElement('div'); keys.className = 'keys';
+  keys.append(line('W A S D', 'mover', ''), line('Mouse', 'mirar / câmera', ''), ...def.abilities.map(a => line(a.key, a.name, a.desc)), line('R', 'reiniciar', ''), line('P', 'pausar', ''), line('M', 'mapa', ''));
+  const touch = document.createElement('div'); touch.className = 'touch-help';
+  for (const text of [
+    'Arraste à esquerda: correr · arraste à direita: câmera',
+    'SPRINT liga a Força da Velocidade; corra contra um prédio para subir pela parede',
+    'PULO · ESQ. (dash) · SOCOS (rajada) · RAIO (relâmpago) · TORNADO',
+    'TEMPO (segure): câmera lenta · VENTO (segure): apaga incêndios'
+  ]) { const span = document.createElement('span'); span.textContent = text; touch.append(span); }
+  return [keys, touch];
+}
+
+// --- pause ---
+const pauseMenu = createPauseMenu({
+  characters: CHARACTERS,
+  getCharacterState: () => ({ activeId: activeCharacterId, loadingId: flashLoading ? 'flash' : '', error: characterError }),
+  onSelectCharacter: id => selectCharacter(id),
+  schema: SCHEMA,
+  getSettings: () => settings,
+  onChange: changeSetting,
+  onResetGraphics: () => {
+    settings = defaultSettings(IS_TOUCH);
+    saveSettings(settingsStore, settings);
+    applyGraphicsSettings();
+    pauseMenu.refresh();
+  },
+  onResume: () => resumeGame(),
+  onRestart: () => { resetGame(); resumeGame(); },
+  gameMap: { get ready() { return !!gameMap?.ready; }, drawFull: (...args) => gameMap.drawFull(...args) },
+  getMapState: buildMapState,
+  mapHalf: MAP_HALF,
+  getStatus: () => [
+    ['Personagem', getCharacter(activeCharacterId).name],
+    ...(flashActive() ? [['Força da Velocidade', `${Math.round(flash.energy)}%`]] : []),
+    ['Anéis de energia', `${score}/${rings.length}`],
+    ['Vida', `${Math.round(playerHealth)}%`],
+    ['Jason', enemyAlive ? `nível ${enemyLevel} · ${Math.round(enemyHealth)}/${enemyMaxHealth}` : 'derrotado'],
+    ['Velocidade', `${Math.round(velocity.length() * 3.6)} km/h`],
+    ['Altitude', `${Math.round(hero.position.y)} m`],
+    ['Incêndios ativos', String(fireSystem.getActiveSpots().length)]
+  ],
+  controlsSource: () => activeCharacterId === 'flash'
+    ? flashControlNodes()
+    : ['.keys', '.touch-help'].map(sel => document.querySelector(`#help ${sel}`)?.cloneNode(true)).filter(Boolean)
+});
+
+function openPause(tab = 'game') {
+  if (paused || !document.querySelector('#help').classList.contains('hidden')) return;
+  paused = true;
+  // Nothing may stay held while the world is frozen.
+  for (const code of Object.keys(keys)) keys[code] = false;
+  touchControls?.releaseAll();
+  if (heatVisionActive) stopHeatVision(false);
+  if (iceBreathController.active) stopIceBreath();
+  document.exitPointerLock?.();
+  window.__skyAudioCtx?.suspend?.();
+  pauseMenu.open(tab);
+  pauseMenu.syncGraphics();
+}
+
+function resumeGame() {
+  if (!paused) return;
+  paused = false;
+  pauseMenu.close();
+  window.__skyAudioCtx?.resume?.();
+  lockPointer();
+}
+
+function togglePause(tab = 'game') {
+  if (!paused) openPause(tab);
+  else resumeGame();
+}
+
 function applyPixelRatio(ratio) {
+  // A hidden/minimised window reports 0x0; resizing the targets then would leave
+  // them zero-sized (incomplete framebuffers) until the next real resize.
+  if (!innerWidth || !innerHeight) return;
   renderer.setPixelRatio(ratio);
   renderer.setSize(innerWidth, innerHeight);
   postFx.setSize(innerWidth, innerHeight, ratio);
+  flashFx?.setResolution(innerWidth * ratio, innerHeight * ratio);
 }
 
 function animate(timestamp) {
-  if (adaptiveResolution && lastFrameStamp && !document.hidden) {
+  if (adaptiveResolution && settings.resolutionAuto && lastFrameStamp && !document.hidden) {
     const ratio = adaptiveResolution.sample(timestamp - lastFrameStamp);
     if (ratio !== null) applyPixelRatio(ratio);
     degradeQuality();
   }
+  const frameMs = lastFrameStamp ? timestamp - lastFrameStamp : 0;
   lastFrameStamp = timestamp;
   timer.update(timestamp);
+  updateFps(frameMs);
+  if (paused) {
+    // World frozen; keep drawing so graphics changes are visible behind the menu.
+    pauseMenu.tick();
+    postFx.render();
+    requestAnimationFrame(animate);
+    return;
+  }
   // Never step backwards: a negative delta would destabilise every damped lerp.
   const dt = THREE.MathUtils.clamp(timer.getDelta(), 0, .033);
   const time = timer.getElapsed();
@@ -4690,22 +5266,29 @@ function animate(timestamp) {
   // events) so impacts read clearly while camera and physics stay responsive.
   const animDt = hitStopTimer > 0 ? dt * .08 : dt;
   hitStopTimer = Math.max(0, hitStopTimer - dt);
+  // The Flash can slow the world down; he and the camera keep running at real time.
+  const flashOn = flashActive();
+  const worldScale = flashOn ? flash.timeScale : 1;
+  const worldDt = dt * worldScale;
+  enemyChill = Math.max(0, enemyChill - dt / ICE_BREATH_TUNING.chillSeconds);
+  const chillScale = 1 - ICE_BREATH_TUNING.chillSlow * enemyChill;
   updateDodge(dt);
-  updateBufferedAttack(dt);
-  updateHero(dt,time);
-  updateEnemy(dt,time);
-  updateCityLife(dt,time);
+  if (flashOn) flash.update(dt, time);
+  else { updateBufferedAttack(dt); updateHero(dt,time); }
+  updateEnemy(worldDt * chillScale,time);
+  updateCityLife(worldDt,time);
   updatePlayerRegen(dt);
   updateHeroReactions(dt);
   // Mixers must run before foot-lock: bone world positions only represent the
   // current animation pose after mixer.update. Ground correction then affects
   // combat/laser bone queries in the same rendered frame.
-  if (mixer) mixer.update(animDt);
-  if (enemyMixer) enemyMixer.update(animDt);
+  if (flashOn) flash.mixer.update(dt);
+  else if (mixer) mixer.update(animDt);
+  if (enemyMixer) enemyMixer.update(animDt * worldScale * chillScale);
   updateCharacterGrounding(dt);
-  updateHeroEvents(animDt);
-  updateEnemyEvents(animDt);
-  updateHeatVision(dt);
+  if (!flashOn) updateHeroEvents(animDt);
+  updateEnemyEvents(animDt * worldScale * chillScale);
+  if (!flashOn) updateHeatVision(dt);
   updateIceBreath(dt);
   if (normalPunchImpactTimer >= 0) {
     normalPunchImpactTimer -= dt;
@@ -4721,18 +5304,26 @@ function animate(timestamp) {
       triggerSuperPunchImpact();
     }
   }
-  updateDynamicEvents(dt, time);
+  updateDynamicEvents(worldDt, time);
   updateSpaceEnvironment(dt, time);
   updateCamera(dt);
   updateImpactEffects(dt);
   updateAtmosphere(dt, time);
   // Portrait phones show a "rotate" screen; don't spend GPU behind it.
+  updateMinimap(frameMs);
   if (!(IS_TOUCH && innerHeight > innerWidth)) postFx.render();
   requestAnimationFrame(animate);
+}
+applyGraphicsSettings();
+setActiveCharacter('superman');
+{
+  const wanted = new URLSearchParams(location.search).get('character') || loadCharacterId(settingsStore);
+  if (wanted === 'flash') selectCharacter('flash');
 }
 requestAnimationFrame(animate);
 
 addEventListener('resize', () => {
+  if (!innerWidth || !innerHeight) return;
   camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
   applyPixelRatio(adaptiveResolution ? adaptiveResolution.ratio : PROFILE.startPixelRatio);
@@ -4834,7 +5425,9 @@ function triggerLeapAttackImpact() {
 // Optional debug handle for automated/browser inspection: open index.html?debug.
 if (new URLSearchParams(location.search).has('debug')) {
   window.__sky = {
-    THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio, IS_TOUCH, PROFILE, lookBy,
+    THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio, IS_TOUCH, PROFILE, lookBy, pauseMenu, openPause, resumeGame, changeSetting, selectCharacter, layoutRings, rings, dodge, dynamicEventSystem, tryInterceptActiveMeteor, applyIceBreathDamage,
+    get flash() { return flash; }, get flashFx() { return flashFx; }, get activeCharacterId() { return activeCharacterId; },
+    get settings() { return settings; }, get paused() { return paused; }, get gameMap() { return gameMap; }, buildMapState,
     get mixer() { return mixer; },
     get enemyMixer() { return enemyMixer; },
     get importedHero() { return importedHero; },

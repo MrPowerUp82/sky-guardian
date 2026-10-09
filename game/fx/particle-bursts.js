@@ -126,6 +126,8 @@ const rand = (a, b) => a + Math.random() * (b - a);
 
 export class ParticleBursts {
   constructor(scene) {
+    // 0..1 multiplier on every burst; 0 disables particles entirely.
+    this.density = 1;
     this.smokePool = new ParticlePool(scene, { capacity: 1400, additive: false, soft: true, renderOrder: 4 });
     this.chunkPool = new ParticlePool(scene, { capacity: 500, additive: false, soft: false, renderOrder: 5 });
     this.sparkPool = new ParticlePool(scene, { capacity: 900, additive: true, soft: true, renderOrder: 6 });
@@ -133,7 +135,8 @@ export class ParticleBursts {
 
   // Expanding ring of dust kicked up at ground level.
   dust(at, { count = 26, radius = 3, power = 1, tint = [.5, .46, .4] } = {}) {
-    for (let i = 0; i < count; i++) {
+    const n = Math.round(count * this.density);
+    for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const speed = rand(.35, 1) * radius * 1.8 * power;
       const shade = rand(.82, 1.08);
@@ -149,7 +152,8 @@ export class ParticleBursts {
 
   // Dark chunks thrown outward that fall back to the ground.
   debris(at, { count = 16, power = 1, spread = 1 } = {}) {
-    for (let i = 0; i < count; i++) {
+    const n = Math.round(count * this.density);
+    for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const speed = rand(3, 10) * power * spread;
       const shade = rand(.25, .5);
@@ -164,7 +168,8 @@ export class ParticleBursts {
 
   // Hot sparks; `dir` biases the spray (optional unit vector).
   sparks(at, { count = 30, power = 1, dir = null, cone = 1, color = [1, .72, .3] } = {}) {
-    for (let i = 0; i < count; i++) {
+    const n = Math.round(count * this.density);
+    for (let i = 0; i < n; i++) {
       let vx = rand(-1, 1), vy = rand(-.2, 1), vz = rand(-1, 1);
       if (dir) { vx = dir.x + vx * cone * .7; vy = dir.y + vy * cone * .7; vz = dir.z + vz * cone * .7; }
       const len = Math.hypot(vx, vy, vz) || 1;
@@ -181,6 +186,7 @@ export class ParticleBursts {
 
   // Soft white puff for vapour trails behind a fast hero.
   contrail(at, { size = 1.4, alpha = .38 } = {}) {
+    if (this.density < 1 && Math.random() > this.density) return;
     this.smokePool.emit({
       x: at.x + rand(-.15, .15), y: at.y + rand(-.15, .15), z: at.z + rand(-.15, .15),
       vx: rand(-.25, .25), vy: rand(-.1, .3), vz: rand(-.25, .25),
@@ -190,7 +196,8 @@ export class ParticleBursts {
 
   // Burning embers drifting upward (meteor craters, fires).
   embers(at, { count = 14, radius = 6 } = {}) {
-    for (let i = 0; i < count; i++) {
+    const n = Math.round(count * this.density);
+    for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = Math.random() * radius;
       this.sparkPool.emit({

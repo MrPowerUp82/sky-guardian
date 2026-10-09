@@ -96,6 +96,30 @@ export class FireSystem {
     return out;
   }
 
+  // Cools every spot within `radius` of `origin` (a spinning/gusting source with
+  // no preferred direction). Returns the ids that were affected.
+  applyCoolingSphere({ origin, radius = 10, dt, rate = 0.42 } = {}) {
+    const o = cloneVec(origin);
+    if (!(dt > 0) || !(radius > 0)) return [];
+    const affected = [];
+    for (const spot of this.querySphere(o, radius)) {
+      const dist = length(sub(spot.position, o));
+      if (dist > radius + spot.radius) continue;
+      const weight = Math.max(.35, 1 - (dist / radius) * .65);
+      spot.intensity = Math.max(0, spot.intensity - Math.max(0, rate) * weight * dt);
+      affected.push(spot.id);
+      if (spot.intensity <= 1e-6) {
+        spot.intensity = 0;
+        spot.state = 'extinguished';
+        spot.coolingTimer = 0;
+      } else {
+        spot.state = 'cooling';
+        spot.coolingTimer = this.tuning.coolingStateSeconds;
+      }
+    }
+    return affected;
+  }
+
   applyCoolingCone({ origin, direction, range = 24, halfAngleDeg = 22, dt, rate = 0.42, occluded = null } = {}) {
     const o = cloneVec(origin), d = cloneVec(direction);
     const dl = length(d);

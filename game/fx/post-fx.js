@@ -17,7 +17,8 @@ const CinematicShader = {
     uVignette: { value: 0.28 },
     uSaturation: { value: 1.08 },
     uContrast: { value: 1.04 },
-    uHeat: { value: 0 }
+    uHeat: { value: 0 },
+    uSlow: { value: 0 }
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -26,7 +27,7 @@ const CinematicShader = {
   fragmentShader: /* glsl */`
     varying vec2 vUv;
     uniform sampler2D tDiffuse;
-    uniform float uSpeed, uAberration, uVignette, uSaturation, uContrast, uHeat;
+    uniform float uSpeed, uAberration, uVignette, uSaturation, uContrast, uHeat, uSlow;
 
     void main() {
       vec2 c = vUv - 0.5;
@@ -59,8 +60,12 @@ const CinematicShader = {
       col = (col - 0.18) * uContrast + 0.18;
       col = mix(col, col * vec3(1.18, 0.82, 0.7), uHeat * smoothstep(0.05, 0.4, r2));
 
+      // Time-slow look: cold, desaturated, darker edges.
+      float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(col, vec3(lum) * vec3(0.78, 0.92, 1.25), uSlow * 0.55);
+
       // Vignette.
-      col *= 1.0 - uVignette * smoothstep(0.1, 0.62, r2 * 1.9);
+      col *= 1.0 - (uVignette + uSlow * 0.35) * smoothstep(0.1, 0.62, r2 * 1.9);
       gl_FragColor = vec4(max(col, 0.0), 1.0);
     }
   `
@@ -82,6 +87,8 @@ export class PostFx {
     this.speed = 0;
     this.aberration = 0;
     this.heat = 0;
+    this.slow = 0;
+    this.cameraFx = true;
     if (!this.enabled) return;
 
     const size = renderer.getSize(new THREE.Vector2());
@@ -105,6 +112,22 @@ export class PostFx {
     this.composer.addPass(new OutputPass());
   }
 
+  // Speed blur and impact aberration (the vignette/grade always stay on).
+  setCameraFx(enabled) {
+    this.cameraFx = enabled;
+  }
+
+  // Changes MSAA at runtime by reallocating both ping-pong targets.
+  setMsaa(samples) {
+    if (!this.enabled) return;
+    for (const target of [this.composer.renderTarget1, this.composer.renderTarget2]) {
+      if (target.samples !== samples) {
+        target.samples = samples;
+        target.dispose();
+      }
+    }
+  }
+
   setBloom(enabled) {
     if (this.bloom) this.bloom.enabled = enabled;
   }
@@ -116,16 +139,19 @@ export class PostFx {
   }
 
   // speed01: 0..1 flight speed; impact01: 0..1 camera shake; heat01: 0..1 reentry heat.
-  setState({ speed01 = 0, impact01 = 0, heat01 = 0 }, dt) {
+  setState({ speed01 = 0, impact01 = 0, heat01 = 0, slow01 = 0 }, dt) {
+    if (!this.cameraFx) { speed01 = 0; impact01 = 0; }
     const k = 1 - Math.exp(-6 * dt);
     this.speed += (speed01 - this.speed) * k;
     this.aberration += (impact01 * .0025 - this.aberration) * (1 - Math.exp(-14 * dt));
     this.heat += (heat01 - this.heat) * k;
+    this.slow += (slow01 - this.slow) * (1 - Math.exp(-8 * dt));
     if (!this.enabled) return;
     const u = this.grade.uniforms;
     u.uSpeed.value = this.speed;
     u.uAberration.value = this.aberration;
     u.uHeat.value = this.heat;
+    u.uSlow.value = this.slow;
   }
 
   render() {

@@ -128,3 +128,21 @@ O scheduler usa uma calma inicial de 30–45 s, janela de 45–90 s para incênd
 ### Ferramenta de desenvolvimento para animações
 
 `tools/add-animation-clips.mjs` copia clips selecionados do GLB original para o GLB otimizado sem substituir mesh, skeleton ou texturas do runtime. Ela existe apenas para manutenção do projeto; o jogo não depende do GLB original em execução.
+
+## V18 — visão de calor com Start / Loop / Exit (como o Ice Breath)
+
+- Ao segurar `Q` (ou o botão CALOR no toque) a visão de calor agora toca **`Laser_*_Start` → `Laser_*_Loop` → `Laser_*_Exit`**, com variantes de chão (`Ground`) e de ar (`Air`). Antes, o loop era só a ponta final do clip, que no chão já voltava a ficar em pé.
+- Os clips foram **gravados no GLB** (`tools/bake-subclips.mjs` + `tools/heat-vision-clips.json`) a partir dos clips autorais: o `Loop` é um ciclo contínuo (a ponta é misturada no começo, então a primeira e a última pose são iguais) e o `Exit` leva de volta à pose neutra.
+- Seis slots configuráveis no configurador: `heatVision{Ground,Air}{Start,Loop,Exit}`. Se os clips novos estiverem ausentes, o jogo volta ao comportamento antigo.
+- Soltar `Q` durante o Start deixa o Start terminar e vai direto para o Exit; mover-se durante o Exit cancela a saída.
+- Para refazer os cortes: `node tools/bake-subclips.mjs assets/superman/Superman-game.glb tools/heat-vision-clips.json` (a partir de um GLB sem esses clips).
+
+## V19 — pausa, gráficos, mapa e minimapa
+
+- `P` ou `Esc` pausam (no toque, o botão **II**). `M` abre direto o mapa; tocar no minimapa faz o mesmo no celular.
+- A aba **Gráficos** aplica tudo na hora e salva no aparelho (`localStorage`, chave `sky-guardian:graphics:v1`). Com **Resolução automática** ligada o jogo ajusta a escala sozinho; desligada, vale o controle de escala.
+- URL: `?fx=off|low|mobile|high` e `?adaptive=off` ainda existem e definem apenas o estado inicial.
+
+## V20 — The Flash
+
+Abra **Pausa → Personagem** (ou `?character=flash`) para jogar de The Flash. Ele não voa: corre. **Shift** ativa a Força da Velocidade (raios, rastro e imagens residuais); correr contra um prédio alto o faz subir pela parede. Habilidades: `F` salto, `Espaço` esquiva relâmpago, `E` rajada de socos, `X` raio, `C` tornado, `G` vendaval (apaga fogo), `Q` tempo lento. No celular os mesmos botões ganham novos nomes.

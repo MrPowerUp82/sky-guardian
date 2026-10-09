@@ -12,6 +12,7 @@ export const AIR_REFERENCE_MAX_Y = 0.6;
 // floating. When the same clip is used in the air it is flattened instead.
 export const HERO_GROUND_AUTHORED_CLIPS = new Set([
   'C003_Idle_01', 'C003_Run_01', 'C003_Punch_01', 'C003_N_Attack_01', 'C003_Laser_Ground',
+  'C003_Laser_Ground_Start', 'C003_Laser_Ground_Loop', 'C003_Laser_Ground_Exit',
   'C003_IceBreath', 'C003_IceBreath_Loop', 'C003_IceBreath_IntoIdle',
   'C003_LeapAttack', 'C003_LeapAttackLand'
 ]);

@@ -13,7 +13,7 @@ test('HUD V16 expõe emergência e controle de Ice Breath', () => {
 
 test('main importa EmergencyPresentation e VFX de emergência não usa assets externos', () => {
   const main=read('main.js');
-  assert.match(main,/import\s+\{\s*EmergencyPresentation\s*\}\s+from\s+["']\.\/game\/events\/emergency-presentation\.js["']/);
+  assert.match(main,/import\s+\{\s*EmergencyPresentation(?:\s*,\s*METEOR_RADIUS)?\s*\}\s+from\s+["']\.\/game\/events\/emergency-presentation\.js["']/);
   const module=read('game/events/emergency-presentation.js');
   assert.doesNotMatch(module,/https?:\/\//i);
   assert.match(module,/export class EmergencyPresentation/);
@@ -83,7 +83,7 @@ test('Super Punch e varredura supersônica tentam interceptar meteoro', () => {
   const punch=main.match(/function\s+triggerSuperPunchImpact\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(punch,/tryInterceptActiveMeteor\s*\(/);
   assert.match(main,/function\s+trySupersonicMeteorSweep\s*\(/);
-  assert.match(main,/speed\s*<\s*MACH_ONE|speed\s*>=\s*MACH_ONE/);
+  assert.match(main,/speed\s*<\s*METEOR_SMASH_SPEED|speed\s*<\s*MACH_ONE|speed\s*>=\s*MACH_ONE/);
   assert.match(main,/trySupersonicMeteorSweep\s*\(previousPosition\s*,\s*hero\.position/);
   assert.match(main,/tryInterceptActiveMeteor\s*\(["']supersonic["']/);
 });
