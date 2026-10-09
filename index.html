@@ -8,12 +8,16 @@
   <meta name="theme-color" content="#87c8ff" />
   <title>Superman Fan Prototype — Three.js</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-title" content="Sky Guardian" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="stylesheet" href="./style.css" />
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/"
+      "three": "./vendor/three/build/three.module.js",
+      "three/addons/": "./vendor/three/examples/jsm/"
     }
   }
   </script>
@@ -77,12 +81,19 @@
     </div>
     <a class="configurator-link" href="./animation-configurator.html">CONFIGURADOR DE ANIMAÇÕES 2.0</a>
     <button id="play">JOGAR</button>
+    <div id="pwa-box">
+      <button id="install-app" type="button" hidden>Instalar o jogo</button>
+      <small id="ios-install-hint" hidden>No iPhone/iPad: toque em Compartilhar → Adicionar à Tela de Início.</small>
+      <small class="pwa-line">Modo offline: <b id="offline-status">verificando…</b></small>
+    </div>
     <small class="desktop-only">Clique na tela para capturar o mouse novamente.</small>
   </div>
 
   <div id="rotate-hint"><div>Gire o aparelho para a horizontal</div></div>
   <div id="message"></div>
 
+  <div id="offline-badge" hidden>OFFLINE</div>
+  <script src="./pwa.js" defer></script>
   <script type="module" src="./main.js"></script>
 </body>
 </html>

@@ -5197,7 +5197,8 @@ const pauseMenu = createPauseMenu({
     ['Jason', enemyAlive ? `nível ${enemyLevel} · ${Math.round(enemyHealth)}/${enemyMaxHealth}` : 'derrotado'],
     ['Velocidade', `${Math.round(velocity.length() * 3.6)} km/h`],
     ['Altitude', `${Math.round(hero.position.y)} m`],
-    ['Incêndios ativos', String(fireSystem.getActiveSpots().length)]
+    ['Incêndios ativos', String(fireSystem.getActiveSpots().length)],
+    ['Modo offline', window.__pwa?.label ?? 'indisponível']
   ],
   controlsSource: () => activeCharacterId === 'flash'
     ? flashControlNodes()

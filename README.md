@@ -146,3 +146,11 @@ O scheduler usa uma calma inicial de 30–45 s, janela de 45–90 s para incênd
 ## V20 — The Flash
 
 Abra **Pausa → Personagem** (ou `?character=flash`) para jogar de The Flash. Ele não voa: corre. **Shift** ativa a Força da Velocidade (raios, rastro e imagens residuais); correr contra um prédio alto o faz subir pela parede. Habilidades: `F` salto, `Espaço` esquiva relâmpago, `E` rajada de socos, `X` raio, `C` tornado, `G` vendaval (apaga fogo), `Q` tempo lento. No celular os mesmos botões ganham novos nomes.
+
+## V21 — PWA (jogar offline)
+
+- **Instalar:** no Chrome/Edge/Android aparece o botão **Instalar o jogo** na tela inicial; no iPhone/iPad use Compartilhar → Adicionar à Tela de Início. Precisa de **HTTPS** (ou `localhost`).
+- **Offline:** na primeira visita online o jogo baixa os 91 modelos (~38 MB) em segundo plano; a tela inicial e o menu de pausa (aba Jogo) mostram o progresso e "pronto para jogar offline ✓". Depois disso funciona sem internet (aparece o selo OFFLINE quando a conexão cai).
+- **three.js local:** o jogo não depende mais de CDN — as bibliotecas ficam em `vendor/three/` (`npm run vendor` as baixa de novo).
+- **Atualizações:** arquivos de código usam rede primeiro (edições aparecem na hora, com o cache como reserva). Ao **adicionar ou remover arquivos** ou trocar um modelo `.glb`, rode `npm run pwa` (um teste avisa se esquecer). Só os modelos alterados são baixados de novo.
+- Ícones: `python tools/make-icons.py`. `?nosw` desliga e limpa o service worker.

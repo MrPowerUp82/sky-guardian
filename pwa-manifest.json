@@ -1,0 +1,528 @@
+{
+  "version": "1fae9837e6",
+  "core": [
+    "./",
+    "./index.html",
+    "./style.css",
+    "./main.js",
+    "./hero-motion.js",
+    "./hero-state.js",
+    "./animation-config-runtime.js",
+    "./animation-configurator.html",
+    "./animation-configurator.css",
+    "./animation-configurator.js",
+    "./favicon.svg",
+    "./manifest.webmanifest",
+    "./pwa.js",
+    "./game/characters/flash-controller.js",
+    "./game/characters/flash-math.js",
+    "./game/characters/registry.js",
+    "./game/combat/enemy-poise.js",
+    "./game/events/building-fire-event.js",
+    "./game/events/dynamic-event-system.js",
+    "./game/events/emergency-presentation.js",
+    "./game/events/meteor-event.js",
+    "./game/fire/fire-system.js",
+    "./game/fx/adaptive-quality.js",
+    "./game/fx/ambient-life.js",
+    "./game/fx/particle-bursts.js",
+    "./game/fx/post-fx.js",
+    "./game/fx/sky-dome.js",
+    "./game/fx/speed-force-fx.js",
+    "./game/powers/ice-breath-controller.js",
+    "./game/settings/graphics-settings.js",
+    "./game/ui/device.js",
+    "./game/ui/game-map.js",
+    "./game/ui/map-math.js",
+    "./game/ui/pause-menu.js",
+    "./game/ui/touch-controls.js",
+    "./game/ui/touch-math.js",
+    "./game/world/city-layout.js",
+    "./game/world/instanced-traffic.js",
+    "./config/jason-animation-config.json",
+    "./config/superman-animation-config.json",
+    "./vendor/three/build/three.core.js",
+    "./vendor/three/build/three.module.js",
+    "./vendor/three/examples/jsm/controls/OrbitControls.js",
+    "./vendor/three/examples/jsm/lines/LineMaterial.js",
+    "./vendor/three/examples/jsm/lines/LineSegments2.js",
+    "./vendor/three/examples/jsm/lines/LineSegmentsGeometry.js",
+    "./vendor/three/examples/jsm/loaders/GLTFLoader.js",
+    "./vendor/three/examples/jsm/postprocessing/EffectComposer.js",
+    "./vendor/three/examples/jsm/postprocessing/MaskPass.js",
+    "./vendor/three/examples/jsm/postprocessing/OutputPass.js",
+    "./vendor/three/examples/jsm/postprocessing/Pass.js",
+    "./vendor/three/examples/jsm/postprocessing/RenderPass.js",
+    "./vendor/three/examples/jsm/postprocessing/ShaderPass.js",
+    "./vendor/three/examples/jsm/postprocessing/UnrealBloomPass.js",
+    "./vendor/three/examples/jsm/shaders/CopyShader.js",
+    "./vendor/three/examples/jsm/shaders/LuminosityHighPassShader.js",
+    "./vendor/three/examples/jsm/shaders/OutputShader.js",
+    "./vendor/three/examples/jsm/utils/BufferGeometryUtils.js",
+    "./vendor/three/examples/jsm/utils/SkeletonUtils.js",
+    "./vendor/three/LICENSE",
+    "./vendor/three/VERSION",
+    "./icons/apple-touch-icon.png",
+    "./icons/icon-192.png",
+    "./icons/icon-512.png",
+    "./icons/icon-maskable-512.png"
+  ],
+  "assets": [
+    {
+      "url": "./assets/flash/the-flash.glb",
+      "hash": "f42d7c6c586e1cae",
+      "size": 1521024
+    },
+    {
+      "url": "./assets/jason/Jason-game.glb",
+      "hash": "11e75b39f2dad913",
+      "size": 11523276
+    },
+    {
+      "url": "./assets/kenney/car-kit/ambulance.glb",
+      "hash": "32a67162520ed571",
+      "size": 245804
+    },
+    {
+      "url": "./assets/kenney/car-kit/delivery.glb",
+      "hash": "71dec7abb31ff8f2",
+      "size": 252504
+    },
+    {
+      "url": "./assets/kenney/car-kit/firetruck.glb",
+      "hash": "2735622b22748ea8",
+      "size": 244684
+    },
+    {
+      "url": "./assets/kenney/car-kit/garbage-truck.glb",
+      "hash": "0932600811cef677",
+      "size": 280428
+    },
+    {
+      "url": "./assets/kenney/car-kit/hatchback-sports.glb",
+      "hash": "f7a01bad2cb89cb3",
+      "size": 210092
+    },
+    {
+      "url": "./assets/kenney/car-kit/police.glb",
+      "hash": "e7b65516681e5999",
+      "size": 207584
+    },
+    {
+      "url": "./assets/kenney/car-kit/sedan-sports.glb",
+      "hash": "d844972349334e4c",
+      "size": 189920
+    },
+    {
+      "url": "./assets/kenney/car-kit/sedan.glb",
+      "hash": "ac461dadf49c6f11",
+      "size": 184504
+    },
+    {
+      "url": "./assets/kenney/car-kit/suv-luxury.glb",
+      "hash": "ea97d72516b5b5f3",
+      "size": 188200
+    },
+    {
+      "url": "./assets/kenney/car-kit/suv.glb",
+      "hash": "20a8b8fc93ea5565",
+      "size": 219840
+    },
+    {
+      "url": "./assets/kenney/car-kit/taxi.glb",
+      "hash": "0774707c8674952b",
+      "size": 187896
+    },
+    {
+      "url": "./assets/kenney/car-kit/truck.glb",
+      "hash": "bdd948be8aab7563",
+      "size": 188652
+    },
+    {
+      "url": "./assets/kenney/car-kit/van.glb",
+      "hash": "31fd2d607d2ee3f9",
+      "size": 187952
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-a.glb",
+      "hash": "bf2014241f4ac160",
+      "size": 119976
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-b.glb",
+      "hash": "10de60b56261a9c3",
+      "size": 117452
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-c.glb",
+      "hash": "975848d3ec32a565",
+      "size": 113828
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-d.glb",
+      "hash": "708c86d9bd669e97",
+      "size": 106200
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-e.glb",
+      "hash": "4f48283f6d545d3a",
+      "size": 139248
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-f.glb",
+      "hash": "daf0864ee04fda7d",
+      "size": 159976
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-g.glb",
+      "hash": "93844a42566c2882",
+      "size": 177400
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-h.glb",
+      "hash": "76a357e91dd6780f",
+      "size": 138412
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-i.glb",
+      "hash": "c2121485c958ea7c",
+      "size": 220772
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-j.glb",
+      "hash": "4d4645078925ba3f",
+      "size": 451692
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-k.glb",
+      "hash": "5fbf0a6ea8400c18",
+      "size": 258020
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-l.glb",
+      "hash": "f40554ece474e25e",
+      "size": 301556
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-m.glb",
+      "hash": "e43c733eee7a28dd",
+      "size": 312044
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-n.glb",
+      "hash": "58daf52338e5f6a4",
+      "size": 352276
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-skyscraper-a.glb",
+      "hash": "7aa991cd3db07aea",
+      "size": 122376
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-skyscraper-b.glb",
+      "hash": "d7fec9e2a4144bd8",
+      "size": 149524
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-skyscraper-c.glb",
+      "hash": "4bc14fa5d63266d7",
+      "size": 160564
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-skyscraper-d.glb",
+      "hash": "1fddbb802fce25a3",
+      "size": 178188
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/building-skyscraper-e.glb",
+      "hash": "6a000b8cfc531306",
+      "size": 112920
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-a.glb",
+      "hash": "2abb5e6475bd09a4",
+      "size": 25364
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-b.glb",
+      "hash": "a44aa2ea71cacdc0",
+      "size": 27364
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-c.glb",
+      "hash": "8846b07597b952e5",
+      "size": 23308
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-d.glb",
+      "hash": "26919346f82d88c1",
+      "size": 19744
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-e.glb",
+      "hash": "5a00c96649ed5673",
+      "size": 19264
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-f.glb",
+      "hash": "f9cf9fc2a2fe1d1e",
+      "size": 17956
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-wide-a.glb",
+      "hash": "5f3c03cff77fb72d",
+      "size": 23760
+    },
+    {
+      "url": "./assets/kenney/city-kit-commercial/low-detail-building-wide-b.glb",
+      "hash": "7a674eb63ce5c007",
+      "size": 29764
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/construction-barrier.glb",
+      "hash": "39d2d46ff4d15180",
+      "size": 18512
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/construction-cone.glb",
+      "hash": "59b53f640a67c531",
+      "size": 18512
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/dumpster.glb",
+      "hash": "b58f4fc4ab720a7f",
+      "size": 35840
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/light-curved.glb",
+      "hash": "6a297e0e093aec79",
+      "size": 20940
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/light-square.glb",
+      "hash": "31296b3f8bdc1dd6",
+      "size": 18444
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/road-crossroad.glb",
+      "hash": "380ecda6489e609a",
+      "size": 21532
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/road-sign-street.glb",
+      "hash": "e42b7835708bfe1b",
+      "size": 27400
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/road-straight.glb",
+      "hash": "29522cb88f24af96",
+      "size": 16696
+    },
+    {
+      "url": "./assets/kenney/city-kit-roads/traffic-light-hanging.glb",
+      "hash": "54e2799cf2feca39",
+      "size": 33588
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-a.glb",
+      "hash": "1e3bebfe53a6adbc",
+      "size": 110408
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-b.glb",
+      "hash": "62e2b9e0a4d60ee0",
+      "size": 158540
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-c.glb",
+      "hash": "7ce662f7350b5863",
+      "size": 111408
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-d.glb",
+      "hash": "db4241205755db59",
+      "size": 159184
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-e.glb",
+      "hash": "0ff1d7aa0ef84924",
+      "size": 157316
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-f.glb",
+      "hash": "24ca0d1e4d74241c",
+      "size": 150356
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-g.glb",
+      "hash": "fa8f6a8c64cd3071",
+      "size": 105400
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-h.glb",
+      "hash": "d22983ec2f0651e7",
+      "size": 77168
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-i.glb",
+      "hash": "0fbd4ebe9d6d3194",
+      "size": 81576
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-j.glb",
+      "hash": "4eb7feb3ef558126",
+      "size": 111336
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-k.glb",
+      "hash": "bd5227cbe38f3acc",
+      "size": 100972
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/building-type-l.glb",
+      "hash": "4cdc06fca0aeeff4",
+      "size": 121056
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/tree-large.glb",
+      "hash": "7ea5961178621d9a",
+      "size": 17624
+    },
+    {
+      "url": "./assets/kenney/city-kit-suburban/tree-small.glb",
+      "hash": "ab96e45174f2feb3",
+      "size": 17624
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-female-a.glb",
+      "hash": "3252e314fe541a1c",
+      "size": 279936
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-female-b.glb",
+      "hash": "719d6184cdd57c0f",
+      "size": 258632
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-female-c.glb",
+      "hash": "b79728751dcd2ecd",
+      "size": 258532
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-female-d.glb",
+      "hash": "909746a2df6f5f71",
+      "size": 265240
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-female-e.glb",
+      "hash": "850220bcf0711802",
+      "size": 254504
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-female-f.glb",
+      "hash": "ef41228b3be8929c",
+      "size": 265976
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-male-a.glb",
+      "hash": "7e55629a47a366a0",
+      "size": 253400
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-male-b.glb",
+      "hash": "985df4d23bed40ba",
+      "size": 253828
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-male-c.glb",
+      "hash": "f6529429221b7d74",
+      "size": 269588
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-male-d.glb",
+      "hash": "74d7dafbf8cd4b9d",
+      "size": 251668
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-male-e.glb",
+      "hash": "91f6e845645b94c5",
+      "size": 249188
+    },
+    {
+      "url": "./assets/kenney/mini-characters/character-male-f.glb",
+      "hash": "4d87de2f047aca85",
+      "size": 255876
+    },
+    {
+      "url": "./assets/kenney/nature-kit/flower-purplea.glb",
+      "hash": "ade9ea291f570978",
+      "size": 7112
+    },
+    {
+      "url": "./assets/kenney/nature-kit/flower-reda.glb",
+      "hash": "b670f0dc81072c9a",
+      "size": 7104
+    },
+    {
+      "url": "./assets/kenney/nature-kit/flower-yellowa.glb",
+      "hash": "3e6e4ed89fb0f83b",
+      "size": 7120
+    },
+    {
+      "url": "./assets/kenney/nature-kit/grass-large.glb",
+      "hash": "6241751704c46545",
+      "size": 18504
+    },
+    {
+      "url": "./assets/kenney/nature-kit/plant-bush.glb",
+      "hash": "932587e773269bcb",
+      "size": 4396
+    },
+    {
+      "url": "./assets/kenney/nature-kit/plant-bushlarge.glb",
+      "hash": "68c1e5ccfb190c7a",
+      "size": 6436
+    },
+    {
+      "url": "./assets/kenney/nature-kit/rock-largea.glb",
+      "hash": "f31791539d37de50",
+      "size": 7552
+    },
+    {
+      "url": "./assets/kenney/nature-kit/rock-largeb.glb",
+      "hash": "f3dc9cc83a808444",
+      "size": 8560
+    },
+    {
+      "url": "./assets/kenney/nature-kit/tree-detailed.glb",
+      "hash": "a8685fb27c05c4dd",
+      "size": 31412
+    },
+    {
+      "url": "./assets/kenney/nature-kit/tree-fat.glb",
+      "hash": "552f2ea05dd3ffbf",
+      "size": 5576
+    },
+    {
+      "url": "./assets/kenney/nature-kit/tree-oak.glb",
+      "hash": "b934ffe6b6c16b45",
+      "size": 14644
+    },
+    {
+      "url": "./assets/kenney/nature-kit/tree-pinedefaulta.glb",
+      "hash": "ed10e4dc29d260be",
+      "size": 17220
+    },
+    {
+      "url": "./assets/kenney/nature-kit/tree-tall.glb",
+      "hash": "95bcab4ed6793976",
+      "size": 7000
+    },
+    {
+      "url": "./assets/superman/Superman-game.glb",
+      "hash": "2cc51c4ba127cb7a",
+      "size": 14828844
+    }
+  ],
+  "assetBytes": 39490588
+}

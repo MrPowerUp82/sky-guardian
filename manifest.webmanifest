@@ -1,0 +1,20 @@
+{
+  "name": "Sky Guardian — Superman & The Flash",
+  "short_name": "Sky Guardian",
+  "description": "Protótipo de fã em Three.js: voe como o Superman ou corra como The Flash por uma cidade que pode ser jogada offline.",
+  "lang": "pt-BR",
+  "id": "./",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "theme_color": "#87c8ff",
+  "background_color": "#07101f",
+  "categories": ["games"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

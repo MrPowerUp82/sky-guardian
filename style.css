@@ -243,3 +243,12 @@ body.touch #pause-menu { z-index: 40; }
 .pm-error { color: #ff8b8b; }
 body.char-flash #heat-fill { background: linear-gradient(90deg, #ffe45c, #ffffff, #ffd23a); box-shadow: 0 0 8px rgba(255,220,70,.7); }
 body.char-flash.time-slow::after { content: ""; position: fixed; inset: 0; z-index: 8; pointer-events: none; box-shadow: inset 0 0 120px rgba(90,170,255,.28); }
+
+/* V21 PWA ---------------------------------------------------------------------- */
+#pwa-box { margin-top: 12px; display: grid; gap: 6px; justify-items: center; }
+#pwa-box small { margin: 0; font-size: 12px; color: #9fb1cf; }
+#pwa-box b { color: #dff3ff; }
+#install-app { padding: 10px 18px; font-size: 13px; background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.28); }
+#install-app[hidden], #ios-install-hint[hidden], #offline-badge[hidden] { display: none; }
+#offline-badge { position: fixed; z-index: 60; left: 50%; top: calc(6px + env(safe-area-inset-top)); transform: translateX(-50%); padding: 3px 10px; border-radius: 999px; background: rgba(224,33,43,.9); color: #fff; font: 800 10px/1.4 system-ui, sans-serif; letter-spacing: .14em; pointer-events: none; }
+.panel { max-height: calc(100dvh - 24px); overflow-y: auto; }
