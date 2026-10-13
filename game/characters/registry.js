@@ -12,6 +12,7 @@ export const CHARACTERS = Object.freeze([
     accent: '#2a6bff',
     accent2: '#e0212b',
     modelUrl: './assets/superman/Superman-game.glb',
+    model: { height: 2.05, yaw: -Math.PI / 2 },
     credit: 'Modelo: King_45 (Sketchfab) · CC BY',
     skins: [
       { id: 'classic', name: 'Clássico', modelUrl: './assets/superman/Superman-game.glb', credit: 'Modelo: King_45 (Sketchfab) · CC BY', swatch: ['#2a6bff', '#e0212b'] },
@@ -37,6 +38,7 @@ export const CHARACTERS = Object.freeze([
     accent: '#e0212b',
     accent2: '#ffd23a',
     modelUrl: './assets/flash/the-flash.glb',
+    model: { height: 1.9, yaw: 0 },
     credit: 'Modelo: nitwit.friends (Sketchfab) · CC BY 4.0',
     skins: [
       { id: 'classic', name: 'Clássico', modelUrl: './assets/flash/the-flash.glb', credit: 'Modelo: nitwit.friends (Sketchfab) · CC BY 4.0', swatch: ['#e0212b', '#ffd23a'] },
