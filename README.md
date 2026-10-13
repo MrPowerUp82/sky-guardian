@@ -147,6 +147,15 @@ O scheduler usa uma calma inicial de 30–45 s, janela de 45–90 s para incênd
 
 Abra **Pausa → Personagem** (ou `?character=flash`) para jogar de The Flash. Ele não voa: corre. **Shift** ativa a Força da Velocidade (raios, rastro e imagens residuais); correr contra um prédio alto o faz subir pela parede. Habilidades: `F` salto, `Espaço` esquiva relâmpago, `E` rajada de socos, `X` raio, `C` tornado, `G` vendaval (apaga fogo), `Q` tempo lento. No celular os mesmos botões ganham novos nomes.
 
+### Skins
+
+Em **Pausa → Personagem** cada herói tem um seletor de skin (salvo no aparelho; trocar reinicia a página/missão):
+
+- **Superman · Armadura (MultiVersus)** — variante S11 do mesmo modelo, com os mesmos 29 clips. Gerada com `node tools/build-skin-glb.mjs <Superman.glb> assets/superman/Superman-armor.glb assets/superman/Superman-game.glb tools/heat-vision-clips.json`.
+- **The Flash · Flash Reverso** — mesmo rig Mixamo do Flash. O corpo vibra (mais ao correr), deixa cópias translúcidas e um blur ao redor da tela, tem olhos vermelhos brilhantes e raios carmesim (`game/fx/reverse-flash-fx.js`).
+
+Para adicionar outra skin, inclua-a em `skins` no `game/characters/registry.js`, rode `npm run pwa` e `npm test`.
+
 ## V21 — PWA (jogar offline)
 
 - **Instalar:** no Chrome/Edge/Android aparece o botão **Instalar o jogo** na tela inicial; no iPhone/iPad use Compartilhar → Adicionar à Tela de Início. Precisa de **HTTPS** (ou `localhost`).

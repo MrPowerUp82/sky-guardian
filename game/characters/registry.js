@@ -13,6 +13,10 @@ export const CHARACTERS = Object.freeze([
     accent2: '#e0212b',
     modelUrl: './assets/superman/Superman-game.glb',
     credit: 'Modelo: King_45 (Sketchfab) · CC BY',
+    skins: [
+      { id: 'classic', name: 'Clássico', modelUrl: './assets/superman/Superman-game.glb', credit: 'Modelo: King_45 (Sketchfab) · CC BY', swatch: ['#2a6bff', '#e0212b'] },
+      { id: 'armor', name: 'Armadura (MultiVersus)', modelUrl: './assets/superman/Superman-armor.glb', credit: 'Modelo: King_45 (Sketchfab) · CC BY', swatch: ['#26303c', '#8fb8bd'] }
+    ],
     canFly: true,
     energyLabel: 'Visão de calor',
     abilities: [
@@ -34,6 +38,11 @@ export const CHARACTERS = Object.freeze([
     accent2: '#ffd23a',
     modelUrl: './assets/flash/the-flash.glb',
     credit: 'Modelo: nitwit.friends (Sketchfab) · CC BY 4.0',
+    skins: [
+      { id: 'classic', name: 'Clássico', modelUrl: './assets/flash/the-flash.glb', credit: 'Modelo: nitwit.friends (Sketchfab) · CC BY 4.0', swatch: ['#e0212b', '#ffd23a'] },
+      // Vibrates so fast it blurs, red eyes, red lightning (see game/fx/reverse-flash-fx.js).
+      { id: 'reverse', name: 'Flash Reverso', modelUrl: './assets/flash/reverse-flash.glb', credit: 'Modelo: nitwit.friends (Sketchfab) · CC BY 4.0', swatch: ['#d8c23a', '#c4161c'], fx: 'reverse-flash' }
+    ],
     canFly: false,
     energyLabel: 'Força da Velocidade',
     abilities: [
@@ -66,6 +75,36 @@ export function loadCharacterId(storage) {
     return isCharacterId(id) ? id : DEFAULT_CHARACTER;
   } catch {
     return DEFAULT_CHARACTER;
+  }
+}
+
+// --- skins ------------------------------------------------------------------------
+// Every character has at least one skin; the first is the default. The chosen skin
+// of each character is stored as one JSON map { characterId: skinId }.
+
+export const SKIN_STORAGE_KEY = 'sky-guardian:skins';
+
+export function getSkin(characterId, skinId) {
+  const skins = getCharacter(characterId).skins;
+  return skins.find(s => s.id === skinId) || skins[0];
+}
+
+export function loadSkinIds(storage) {
+  try {
+    const raw = JSON.parse(storage?.getItem(SKIN_STORAGE_KEY) || '{}');
+    return Object.fromEntries(CHARACTERS.map(c => [c.id, getSkin(c.id, raw?.[c.id]).id]));
+  } catch {
+    return Object.fromEntries(CHARACTERS.map(c => [c.id, c.skins[0].id]));
+  }
+}
+
+export function saveSkinId(storage, characterId, skinId) {
+  if (!isCharacterId(characterId) || getSkin(characterId, skinId).id !== skinId) return false;
+  try {
+    storage?.setItem(SKIN_STORAGE_KEY, JSON.stringify({ ...loadSkinIds(storage), [characterId]: skinId }));
+    return true;
+  } catch {
+    return false;
   }
 }
 

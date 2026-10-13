@@ -18,7 +18,10 @@ const CinematicShader = {
     uSaturation: { value: 1.08 },
     uContrast: { value: 1.04 },
     uHeat: { value: 0 },
-    uSlow: { value: 0 }
+    uSlow: { value: 0 },
+    // Localised vibration blur: xy = centre in uv, z = strength 0..1, w = time.
+    uVibe: { value: new THREE.Vector4(.5, .5, 0, 0) },
+    uAspect: { value: 1 }
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -27,7 +30,8 @@ const CinematicShader = {
   fragmentShader: /* glsl */`
     varying vec2 vUv;
     uniform sampler2D tDiffuse;
-    uniform float uSpeed, uAberration, uVignette, uSaturation, uContrast, uHeat, uSlow;
+    uniform float uSpeed, uAberration, uVignette, uSaturation, uContrast, uHeat, uSlow, uAspect;
+    uniform vec4 uVibe;
 
     void main() {
       vec2 c = vUv - 0.5;
@@ -45,6 +49,23 @@ const CinematicShader = {
         col = acc / 8.0;
       } else {
         col = texture2D(tDiffuse, vUv).rgb;
+      }
+
+      // Vibration smear around a point (the Reverse Flash): a handful of taps along a
+      // direction that changes every frame, fading out with distance from the centre.
+      if (uVibe.z > 0.002) {
+        vec2 d = (vUv - uVibe.xy) * vec2(uAspect, 1.0);
+        float m = (1.0 - smoothstep(0.06, 0.3, length(d))) * uVibe.z;
+        if (m > 0.002) {
+          float a = fract(sin(uVibe.w * 91.7) * 43758.5) * 6.2831;
+          vec2 dir = vec2(cos(a) / uAspect, sin(a));
+          vec3 acc = col;
+          for (int i = 1; i < 7; i++) {
+            float k = (float(i) - 3.5) / 3.5;
+            acc += texture2D(tDiffuse, vUv + dir * k * 0.016 * m).rgb;
+          }
+          col = mix(col, acc / 7.0, clamp(m * 1.1, 0.0, 0.9));
+        }
       }
 
       // Chromatic aberration, stronger toward the edges.
@@ -88,6 +109,7 @@ export class PostFx {
     this.aberration = 0;
     this.heat = 0;
     this.slow = 0;
+    this.vibe = { x: .5, y: .5, strength: 0, time: 0 };
     this.cameraFx = true;
     if (!this.enabled) return;
 
@@ -152,6 +174,16 @@ export class PostFx {
     u.uAberration.value = this.aberration;
     u.uHeat.value = this.heat;
     u.uSlow.value = this.slow;
+  }
+
+  /** Screen-space vibration blur around uv (0..1, origin bottom-left). Strength 0 turns it off. */
+  setVibrate(x, y, strength, time) {
+    const on = this.cameraFx ? strength : 0;
+    Object.assign(this.vibe, { x, y, strength: on, time });
+    if (!this.enabled) return;
+    const u = this.grade.uniforms;
+    u.uVibe.value.set(x, y, on, time);
+    u.uAspect.value = this.camera?.aspect || 1;
   }
 
   render() {

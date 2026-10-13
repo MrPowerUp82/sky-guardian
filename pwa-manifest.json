@@ -1,5 +1,5 @@
 {
-  "version": "1fae9837e6",
+  "version": "8a6dac957f",
   "core": [
     "./",
     "./index.html",
@@ -27,6 +27,7 @@
     "./game/fx/ambient-life.js",
     "./game/fx/particle-bursts.js",
     "./game/fx/post-fx.js",
+    "./game/fx/reverse-flash-fx.js",
     "./game/fx/sky-dome.js",
     "./game/fx/speed-force-fx.js",
     "./game/powers/ice-breath-controller.js",
@@ -68,6 +69,11 @@
     "./icons/icon-maskable-512.png"
   ],
   "assets": [
+    {
+      "url": "./assets/flash/reverse-flash.glb",
+      "hash": "eba116abfdf05c4f",
+      "size": 2595204
+    },
     {
       "url": "./assets/flash/the-flash.glb",
       "hash": "f42d7c6c586e1cae",
@@ -519,10 +525,15 @@
       "size": 7000
     },
     {
+      "url": "./assets/superman/Superman-armor.glb",
+      "hash": "0058f6b6f705b548",
+      "size": 12523332
+    },
+    {
       "url": "./assets/superman/Superman-game.glb",
       "hash": "2cc51c4ba127cb7a",
       "size": 14828844
     }
   ],
-  "assetBytes": 39490588
+  "assetBytes": 54609124
 }

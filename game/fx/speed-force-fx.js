@@ -15,18 +15,27 @@ const GHOST_POOL = 6;
 const RING_POOL = 4;
 
 // HDR values (>1) so the bloom pass picks the bolts up when it is enabled.
-const CORE = new THREE.Color().setRGB(4.2, 4.0, 3.2);
-const GLOW = new THREE.Color().setRGB(2.6, 1.5, .16);
-const GLOW_RED = new THREE.Color().setRGB(2.4, .35, .12);
+const PALETTES = {
+  speedster: {
+    core: new THREE.Color().setRGB(4.2, 4.0, 3.2), glow: new THREE.Color().setRGB(2.6, 1.5, .16), glowAlt: new THREE.Color().setRGB(2.4, .35, .12),
+    ghost: new THREE.Color().setRGB(1.8, .75, .12), ring: new THREE.Color().setRGB(2.4, 1.6, .3), light: 0xffc24a
+  },
+  // Reverse Flash: crimson lightning with a white-hot core.
+  crimson: {
+    core: new THREE.Color().setRGB(4.4, 1.5, 1.1), glow: new THREE.Color().setRGB(2.5, .1, .07), glowAlt: new THREE.Color().setRGB(1.5, .02, .05),
+    ghost: new THREE.Color().setRGB(2.0, .12, .08), ring: new THREE.Color().setRGB(2.4, .18, .1), light: 0xff2a1a
+  }
+};
 
 const ANCHOR_PATTERNS = ['Head_', 'LeftHand_', 'RightHand_', 'LeftForeArm_', 'RightForeArm_', 'LeftLeg_', 'RightLeg_', 'LeftFoot_', 'RightFoot_', 'Hips_', 'Spine2_'];
 
 class Bolt {
-  constructor(parent, resolution) {
+  constructor(parent, resolution, palette) {
+    this.palette = palette;
     this.geometry = new LineSegmentsGeometry();
     this.geometry.setPositions(new Float32Array(SEGMENTS * 6));
-    this.glowMat = new LineMaterial({ color: GLOW, linewidth: 6, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, worldUnits: false });
-    this.coreMat = new LineMaterial({ color: CORE, linewidth: 2.2, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, worldUnits: false });
+    this.glowMat = new LineMaterial({ color: palette.glow, linewidth: 6, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, worldUnits: false });
+    this.coreMat = new LineMaterial({ color: palette.core, linewidth: 2.2, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, worldUnits: false });
     this.glowMat.resolution.copy(resolution);
     this.coreMat.resolution.copy(resolution);
     this.glow = new LineSegments2(this.geometry, this.glowMat);
@@ -52,7 +61,7 @@ class Bolt {
     this.life = this.maxLife = life;
     this.coreMat.linewidth = width;
     this.glowMat.linewidth = width * 2.8;
-    this.glowMat.color.copy(red ? GLOW_RED : GLOW);
+    this.glowMat.color.copy(red ? this.palette.glowAlt : this.palette.glow);
     this.glowBase = glowScale;
     this.glow.visible = this.core.visible = true;
   }
@@ -73,8 +82,10 @@ export class SpeedForceFx {
   /**
    * @param {{scene:THREE.Scene, model:THREE.Object3D, bursts:object, resolution:THREE.Vector2}} opts
    * `model` is the live Flash scene graph; it is cloned once for the afterimages.
+   * `palette` picks the lightning colours: 'speedster' (default) or 'crimson'.
    */
-  constructor({ scene, model, bursts, resolution }) {
+  constructor({ scene, model, bursts, resolution, palette = 'speedster' }) {
+    this.palette = PALETTES[palette] || PALETTES.speedster;
     this.scene = scene;
     this.model = model;
     this.bursts = bursts;
@@ -83,7 +94,7 @@ export class SpeedForceFx {
     this.root.name = 'speed-force-fx';
     scene.add(this.root);
 
-    this.bolts = Array.from({ length: BOLT_POOL }, () => new Bolt(this.root, this.resolution));
+    this.bolts = Array.from({ length: BOLT_POOL }, () => new Bolt(this.root, this.resolution, this.palette));
     this.boltCursor = 0;
 
     this.anchors = [];
@@ -93,7 +104,7 @@ export class SpeedForceFx {
       if (ANCHOR_PATTERNS.some(p => short.startsWith(p))) this.anchors.push(o);
     });
 
-    this.light = new THREE.PointLight(0xffc24a, 0, 22, 2);
+    this.light = new THREE.PointLight(this.palette.light, 0, 22, 2);
     this.root.add(this.light);
 
     this._buildGhosts();
@@ -113,7 +124,7 @@ export class SpeedForceFx {
   _buildGhosts() {
     this.ghosts = [];
     const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color().setRGB(1.8, .75, .12), transparent: true, opacity: 0,
+      color: this.palette.ghost.clone(), transparent: true, opacity: 0,
       blending: THREE.AdditiveBlending, depthWrite: false
     });
     for (let i = 0; i < GHOST_POOL; i++) {
@@ -138,7 +149,7 @@ export class SpeedForceFx {
     const geo = new THREE.RingGeometry(.82, 1, 40);
     this.rings = Array.from({ length: RING_POOL }, () => {
       const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-        color: new THREE.Color().setRGB(2.4, 1.6, .3), transparent: true, opacity: 0, side: THREE.DoubleSide,
+        color: this.palette.ring.clone(), transparent: true, opacity: 0, side: THREE.DoubleSide,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
       mesh.visible = false;

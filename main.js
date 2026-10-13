@@ -23,7 +23,8 @@ import { createTouchControls } from './game/ui/touch-controls.js';
 import { SCHEMA, SHADOW_LEVELS, FOG_SCALE, ACTOR_SCALE, PARTICLE_DENSITY, defaultSettings, applyChange, loadSettings, saveSettings } from './game/settings/graphics-settings.js';
 import { GameMap } from './game/ui/game-map.js';
 import { createPauseMenu } from './game/ui/pause-menu.js';
-import { CHARACTERS, getCharacter, isCharacterId, loadCharacterId, saveCharacterId } from './game/characters/registry.js';
+import { CHARACTERS, getCharacter, getSkin, isCharacterId, loadCharacterId, saveCharacterId, loadSkinIds, saveSkinId } from './game/characters/registry.js';
+import { ReverseFlashFx } from './game/fx/reverse-flash-fx.js';
 import { FlashController, prepareFlashClips } from './game/characters/flash-controller.js';
 import { SpeedForceFx } from './game/fx/speed-force-fx.js';
 
@@ -1114,7 +1115,10 @@ buildCC0City();
 // The original Sketchfab download contains 181 animation clips and is ~57 MB.
 // This project ships a locally optimized GLB containing the mesh/textures plus
 // 17 useful clips for gameplay, including leap attack/landing, S08 air-idle and ground laser, while staying ~11 MB.
-const CHARACTER_URL = './assets/superman/Superman-game.glb';
+// The skin picked in the pause menu is read once at boot; changing it reloads the page.
+const skinStore = (() => { try { return window.localStorage; } catch { return null; } })();
+const skinIds = loadSkinIds(skinStore);
+const CHARACTER_URL = getSkin('superman', skinIds.superman).modelUrl;
 
 const hero = new THREE.Group();
 hero.position.set(0, getBaseSurfaceHeightAt(0, 130) + GROUND_EPS, 130);
@@ -4833,7 +4837,15 @@ function updateAtmosphere(dt, time) {
     slow01: flashSlow
   }, dt);
   document.body.classList.toggle('time-slow', flashSlow > .5);
+  // Reverse Flash: smear the screen around his (vibrating) body.
+  const vibe = flashActive() && reverseFx ? reverseFx.strength : 0;
+  if (vibe > 0 || postFx.vibe.strength > 0) {
+    vibeProbe.copy(hero.position); vibeProbe.y += 1.1;
+    vibeProbe.project(camera);
+    postFx.setVibrate(vibeProbe.x * .5 + .5, vibeProbe.y * .5 + .5, vibeProbe.z < 1 ? vibe * .8 : 0, time);
+  }
 }
+const vibeProbe = new THREE.Vector3();
 
 const MAX_PIXEL_RATIO = PROFILE.maxPixelRatio;
 const adaptiveResolution = new URLSearchParams(location.search).get('adaptive') === 'off'
@@ -4973,6 +4985,7 @@ const FLASH_HEIGHT = 1.9;
 let activeCharacterId = 'superman';
 let flash = null;                 // FlashController once the model is loaded
 let flashFx = null;
+let reverseFx = null;             // vibration / red eyes, only for the Reverse Flash skin
 let flashRig = null;
 let flashLoadPromise = null;
 let flashLoading = false;
@@ -5066,7 +5079,8 @@ function loadFlashModel() {
   if (flash) return Promise.resolve(flash);
   if (flashLoadPromise) return flashLoadPromise;
   flashLoadPromise = new Promise((resolve, reject) => {
-    gltfLoader.load(getCharacter('flash').modelUrl, gltf => {
+    const flashSkin = getSkin('flash', skinIds.flash);
+    gltfLoader.load(flashSkin.modelUrl, gltf => {
       try {
         const root = gltf.scene;
         prepScene(root, { shadows: true });
@@ -5083,7 +5097,9 @@ function loadFlashModel() {
 
         flashRig = createFootGrounding(root, hero);
         const flashMixer = new THREE.AnimationMixer(root);
-        flashFx = new SpeedForceFx({ scene, model: root, bursts, resolution: renderer.getDrawingBufferSize(new THREE.Vector2()) });
+        const reverse = flashSkin.fx === 'reverse-flash';
+        flashFx = new SpeedForceFx({ scene, model: root, bursts, resolution: renderer.getDrawingBufferSize(new THREE.Vector2()), palette: reverse ? 'crimson' : 'speedster' });
+        if (reverse) reverseFx = new ReverseFlashFx({ scene, model: root, ghosts: IS_TOUCH ? 2 : 3 });
         flash = new FlashController({
           hero, velocity, keys, pivot: flashPivot, model: root, mixer: flashMixer,
           clips: prepareFlashClips(gltf.animations), crossfade: crossfadeAction,
@@ -5118,6 +5134,7 @@ function applyCharacterPresentation() {
   if (fill) fill.style.width = isFlash ? '100%' : '0%';
   if (!isFlash && hudMach) hudMach.textContent = 'Mach: —';
   touchControls?.setLabels(def.touchLabels);
+  reverseFx?.setActive(isFlash);
   layoutRings(isFlash ? 'ground' : 'air');
 }
 
@@ -5150,6 +5167,17 @@ async function selectCharacter(id) {
   if (paused) resumeGame();
 }
 
+// Skins are chosen per character. The model is loaded once, so a change that
+// affects a model already in memory restarts the page (the choice is saved first).
+function selectSkin(characterId, skinId) {
+  if (skinIds[characterId] === skinId || getSkin(characterId, skinId).id !== skinId) return;
+  if (!saveSkinId(skinStore, characterId, skinId)) { characterError = 'Não foi possível salvar a skin neste navegador.'; pauseMenu.refresh(); return; }
+  const loaded = characterId === 'superman' || !!flash || flashLoading;
+  skinIds[characterId] = skinId;
+  if (loaded) { showMessage('APLICANDO SKIN...', 1200); setTimeout(() => location.reload(), 250); }
+  else pauseMenu.refresh();
+}
+
 function flashControlNodes() {
   const def = getCharacter('flash');
   const line = (key, name, desc) => {
@@ -5175,6 +5203,8 @@ const pauseMenu = createPauseMenu({
   characters: CHARACTERS,
   getCharacterState: () => ({ activeId: activeCharacterId, loadingId: flashLoading ? 'flash' : '', error: characterError }),
   onSelectCharacter: id => selectCharacter(id),
+  getSkinIds: () => skinIds,
+  onSelectSkin: (characterId, skinId) => selectSkin(characterId, skinId),
   schema: SCHEMA,
   getSettings: () => settings,
   onChange: changeSetting,
@@ -5287,6 +5317,7 @@ function animate(timestamp) {
   else if (mixer) mixer.update(animDt);
   if (enemyMixer) enemyMixer.update(animDt * worldScale * chillScale);
   updateCharacterGrounding(dt);
+  if (flashOn && reverseFx) reverseFx.update(dt, time, flash.sprint01);
   if (!flashOn) updateHeroEvents(animDt);
   updateEnemyEvents(animDt * worldScale * chillScale);
   if (!flashOn) updateHeatVision(dt);
@@ -5427,7 +5458,7 @@ function triggerLeapAttackImpact() {
 if (new URLSearchParams(location.search).has('debug')) {
   window.__sky = {
     THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio, IS_TOUCH, PROFILE, lookBy, pauseMenu, openPause, resumeGame, changeSetting, selectCharacter, layoutRings, rings, dodge, dynamicEventSystem, tryInterceptActiveMeteor, applyIceBreathDamage,
-    get flash() { return flash; }, get flashFx() { return flashFx; }, get activeCharacterId() { return activeCharacterId; },
+    get flash() { return flash; }, get flashFx() { return flashFx; }, get reverseFx() { return reverseFx; }, get activeCharacterId() { return activeCharacterId; },
     get settings() { return settings; }, get paused() { return paused; }, get gameMap() { return gameMap; }, buildMapState,
     get mixer() { return mixer; },
     get enemyMixer() { return enemyMixer; },

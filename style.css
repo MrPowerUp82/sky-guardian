@@ -233,6 +233,11 @@ body.touch #pause-menu { z-index: 40; }
 .pm-char header p { margin: 2px 0 0; font-size: 12px; color: #c4d4ee; }
 .pm-char header small { margin: 2px 0 0; font-size: 10px; color: #7f93b5; }
 .pm-emblem { flex: none; width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; font: 900 28px/1 system-ui, sans-serif; color: #fff; background: radial-gradient(circle at 30% 30%, var(--accent2), var(--accent) 70%); border: 2px solid rgba(255,255,255,.55); text-shadow: 0 2px 6px rgba(0,0,0,.5); }
+.pm-skins { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pm-skins-label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #7f93b5; margin-right: 2px; }
+.pm-char button.pm-skin { margin: 0; padding: 6px 11px 6px 7px; font-size: 12px; display: inline-flex; gap: 7px; align-items: center; border-radius: 999px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); color: #dbe6fa; }
+.pm-char button.pm-skin i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(255,255,255,.45); flex: none; }
+.pm-char button.pm-skin.on { background: var(--accent); border-color: transparent; color: #fff; }
 .pm-char ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 12px; line-height: 1.35; color: #cfdbf1; }
 .pm-char li { display: flex; gap: 8px; align-items: baseline; }
 .pm-char li kbd { flex: none; min-width: 48px; font-size: 10px; }

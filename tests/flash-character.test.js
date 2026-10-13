@@ -48,17 +48,18 @@ test('approach never overshoots', () => {
   assert.equal(approach(1, 0, 4, 1), 0);
 });
 
-test('speed targets: idle, jog, sprint, exhausted', () => {
-  assert.equal(targetSpeed({ hasInput: false, sprinting: true, exhausted: false }), 0);
-  assert.equal(targetSpeed({ hasInput: true, sprinting: false, exhausted: false }), T.baseSpeed);
-  assert.equal(targetSpeed({ hasInput: true, sprinting: true, exhausted: false }), T.sprintMax);
-  assert.equal(targetSpeed({ hasInput: true, sprinting: true, exhausted: true }), T.baseSpeed);
+test('speed targets: idle, jog, sprint (sprint is not limited by exhaustion)', () => {
+  assert.equal(targetSpeed({ hasInput: false, sprinting: true }), 0);
+  assert.equal(targetSpeed({ hasInput: true, sprinting: false }), T.baseSpeed);
+  assert.equal(targetSpeed({ hasInput: true, sprinting: true }), T.sprintMax);
 });
 
 test('energy drains while used, regenerates when idle, and locks sprint when empty', () => {
   let s = { energy: 100, exhausted: false };
   s = stepEnergy(s, { sprint: true }, 1);
-  assert.equal(s.energy, 100 - T.drains.sprint);
+  assert.equal(s.energy, 100);   // sprint costs nothing
+  s = stepEnergy({ energy: 100, exhausted: false }, { wind: true }, 1);
+  assert.equal(s.energy, 100 - T.drains.wind);
   s = stepEnergy({ energy: 50, exhausted: false }, {}, 1);
   assert.equal(s.energy, 50 + T.energyRegen);
   s = stepEnergy({ energy: 3, exhausted: false }, { slow: true }, 1);

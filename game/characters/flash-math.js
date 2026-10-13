@@ -19,7 +19,7 @@ export const FLASH_TUNING = Object.freeze({
   energyRegen: 15,
   exhaustedUntil: 22,     // after hitting 0, sprint stays locked until this much is back
   costs: { flurry: 25, bolt: 18, tornado: 30, dash: 8 },
-  drains: { sprint: 7, slow: 20, wind: 15, wall: 9 },
+  drains: { sprint: 0, slow: 20, wind: 15, wall: 9 },   // sprint is free
   slowScale: .22          // world time scale while Tempo Lento is active
 });
 
@@ -31,9 +31,9 @@ export function approach(current, target, rate, dt) {
 }
 
 // Speed the Flash is trying to reach on the ground.
-export function targetSpeed({ hasInput, sprinting, exhausted }, tuning = FLASH_TUNING) {
+export function targetSpeed({ hasInput, sprinting }, tuning = FLASH_TUNING) {
   if (!hasInput) return 0;
-  return sprinting && !exhausted ? tuning.sprintMax : tuning.baseSpeed;
+  return sprinting ? tuning.sprintMax : tuning.baseSpeed;
 }
 
 /**

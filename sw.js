@@ -7,7 +7,7 @@
 //    served cache-first. Each carries a content hash, so only changed ones reload.
 //
 // VERSION is stamped by tools/build-pwa.mjs (`npm run pwa`).
-const VERSION = '1fae9837e6';
+const VERSION = '8a6dac957f';
 const CORE_CACHE = `sky-core-${VERSION}`;
 const ASSET_CACHE = 'sky-assets';
 const STATE_KEY = './__state__';

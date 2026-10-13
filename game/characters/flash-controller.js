@@ -241,9 +241,18 @@ export class FlashController {
       const miss = rayPointClosest(origin, dir, meteor, wallT);
       if (miss.distance < 7) { end.copy(meteor); kind = 'meteor'; }
     }
-    if (kind !== 'meteor' && api.enemyUnderAim(wallT, 2.1)) {
-      end.copy(api.enemy().pos).y += 1.2;
-      kind = 'enemy';
+    // Jason: judged on the bolt's own ray (with a small aim-assist cone), because the
+    // camera sits behind and beside the Flash and its ray can miss him while the bolt
+    // passes through. The crosshair test still counts, but a wall in front blocks both.
+    const jason = api.enemy();
+    if (kind !== 'meteor' && jason.alive) {
+      const center = this._f1.copy(jason.pos).add(scratch.set(0, 1.2, 0));
+      const along = rayPointClosest(origin, dir, center);
+      const inFront = along.t > .3 && along.t <= wallT + 1;
+      if (inFront && (along.distance <= 2.1 + along.t * .06 || api.enemyUnderAim(280, 2.1))) {
+        end.copy(center);
+        kind = 'enemy';
+      }
     }
 
     this.fx.bolt(origin, end, { life: .28, width: 5, jitter: Math.min(1.6, .3 + origin.distanceTo(end) * .02), glow: 1.4 });
@@ -353,7 +362,7 @@ export class FlashController {
     const wish = this.inputDirection(this._wish);
     const hasInput = !dead && wish.lengthSq() > 0;
     const sprintHeld = !dead && (this.keys.ShiftLeft || this.keys.ShiftRight);
-    const sprinting = sprintHeld && hasInput && !this.exhausted && this.energy > 0 && !this.action;
+    const sprinting = sprintHeld && hasInput && !this.action;
 
     // --- ability timers ---
     let usage = { sprint: false, slow: false, wind: false, wall: false };
@@ -430,7 +439,7 @@ export class FlashController {
       const spin = this.action?.type === 'tornado';
       const horizontal = this._tmp.set(velocity.x, 0, velocity.z);
       let speed = horizontal.length();
-      const goal = spin ? 3 : targetSpeed({ hasInput, sprinting, exhausted: this.exhausted });
+      const goal = spin ? 3 : targetSpeed({ hasInput, sprinting });
       if (hasInput && speed > 6) {
         // Steer the existing momentum toward the input direction (big arcs at top speed).
         const turn = THREE.MathUtils.lerp(7, 2.1, THREE.MathUtils.clamp(speed / T.sprintMax, 0, 1));

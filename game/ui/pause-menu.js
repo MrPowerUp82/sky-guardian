@@ -21,7 +21,8 @@ function el(tag, attrs = {}, children = []) {
 export function createPauseMenu({
   schema, getSettings, onChange, onResetGraphics, onResume, onRestart,
   gameMap, getMapState, getStatus, mapHalf, controlsSource, root = document.body,
-  characters = [], getCharacterState = () => ({ activeId: '', loadingId: '', error: '' }), onSelectCharacter = () => {}
+  characters = [], getCharacterState = () => ({ activeId: '', loadingId: '', error: '' }), onSelectCharacter = () => {},
+  getSkinIds = () => ({}), onSelectSkin = () => {}
 }) {
   let open = false;
   let tab = 'game';
@@ -158,6 +159,26 @@ export function createPauseMenu({
   const characterNote = el('p', { class: 'pm-hint', text: 'Trocar de personagem reinicia a missão. Cada herói tem habilidades exclusivas.' });
   const characterPanel = el('div', { class: 'pm-panel', 'data-tab': 'character' }, [characterGrid, characterNote]);
 
+  function skinPicker(c) {
+    if ((c.skins?.length || 0) < 2) return null;
+    const current = getSkinIds()[c.id];
+    return el('div', { class: 'pm-skins', role: 'group', 'aria-label': `Skin de ${c.name}` }, [
+      el('span', { class: 'pm-skins-label', text: 'Skin' }),
+      ...c.skins.map(skin => {
+        const on = skin.id === (current || c.skins[0].id);
+        const button = el('button', {
+          type: 'button', class: `pm-skin${on ? ' on' : ''}`, 'aria-pressed': String(on), title: skin.credit,
+          onclick: () => onSelectSkin(c.id, skin.id)
+        }, [
+          el('i', { style: `background:linear-gradient(135deg, ${skin.swatch?.[0] || '#888'} 50%, ${skin.swatch?.[1] || '#ccc'} 50%)`, 'aria-hidden': 'true' }),
+          el('span', { text: skin.name })
+        ]);
+        button.disabled = !!getCharacterState().loadingId;
+        return button;
+      })
+    ]);
+  }
+
   function syncCharacters() {
     const { activeId, loadingId, error } = getCharacterState();
     characterGrid.replaceChildren(...characters.map(c => {
@@ -173,11 +194,12 @@ export function createPauseMenu({
           el('div', { class: 'pm-emblem', text: c.emblem, 'aria-hidden': 'true' }),
           el('div', {}, [el('h3', { text: c.name }), el('p', { text: c.tagline }), el('small', { text: c.credit })])
         ]),
+        skinPicker(c),
         el('ul', {}, c.abilities.map(a => el('li', {}, [el('kbd', { text: a.key }), el('span', {}, [el('b', { text: a.name }), ` — ${a.desc}`])]))),
         button
       ]);
     }));
-    characterNote.textContent = error || 'Trocar de personagem reinicia a missão. Cada herói tem habilidades exclusivas.';
+    characterNote.textContent = error || 'Trocar de personagem ou de skin reinicia a missão. Cada herói tem habilidades exclusivas.';
     characterNote.classList.toggle('pm-error', !!error);
   }
 
