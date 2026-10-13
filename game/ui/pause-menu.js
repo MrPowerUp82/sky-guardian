@@ -1,6 +1,6 @@
 import { defaultView, clampView, zoomAt, panBy } from './map-math.js';
 
-const TABS = [['game', 'Jogo'], ['character', 'Personagem'], ['graphics', 'Gráficos'], ['map', 'Mapa'], ['controls', 'Controles']];
+const TABS = [['game', 'Jogo'], ['character', 'Personagem'], ['online', 'Online'], ['graphics', 'Gráficos'], ['map', 'Mapa'], ['controls', 'Controles']];
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -22,13 +22,14 @@ export function createPauseMenu({
   schema, getSettings, onChange, onResetGraphics, onResume, onRestart,
   gameMap, getMapState, getStatus, mapHalf, controlsSource, root = document.body,
   characters = [], getCharacterState = () => ({ activeId: '', loadingId: '', error: '' }), onSelectCharacter = () => {},
-  getSkinIds = () => ({}), onSelectSkin = () => {}
+  getSkinIds = () => ({}), onSelectSkin = () => {}, onlinePanel = null
 }) {
   let open = false;
   let tab = 'game';
   let view = defaultView(mapHalf);
   let mapCanvas = null;
   let lastStatus = 0;
+  let lastOnline = 0;
 
   const tabButtons = new Map();
   const panels = new Map();
@@ -208,10 +209,11 @@ export function createPauseMenu({
   function syncControls() { controlsPanel.replaceChildren(...(controlsSource?.() || [])); }
 
   // --- shell ----------------------------------------------------------------------
-  for (const [id, text] of TABS) {
+  const tabs = onlinePanel ? TABS : TABS.filter(([id]) => id !== 'online');
+  for (const [id, text] of tabs) {
     tabButtons.set(id, el('button', { type: 'button', role: 'tab', text, onclick: () => show(id) }));
   }
-  for (const panel of [gamePanel, characterPanel, graphicsPanel, mapPanel, controlsPanel]) panels.set(panel.dataset.tab, panel);
+  for (const panel of [gamePanel, characterPanel, onlinePanel?.element, graphicsPanel, mapPanel, controlsPanel]) if (panel) panels.set(panel.dataset.tab, panel);
   const card = el('div', { class: 'pm-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Menu de pausa' }, [
     el('div', { class: 'pm-head' }, [el('h2', { text: 'PAUSADO' }), el('div', { class: 'pm-tabs', role: 'tablist' }, [...tabButtons.values()]),
       el('button', { type: 'button', class: 'pm-close', 'aria-label': 'Continuar', text: '✕', onclick: () => onResume() })]),
@@ -228,6 +230,7 @@ export function createPauseMenu({
     if (id === 'graphics') syncGraphics();
     if (id === 'character') syncCharacters();
     if (id === 'controls') syncControls();
+    if (id === 'online') onlinePanel?.sync();
     if (id === 'game') syncStatus();
     if (id === 'map') fitMap();
   }
@@ -258,8 +261,9 @@ export function createPauseMenu({
       if (!open) return;
       if (tab === 'map' && gameMap?.ready) gameMap.drawFull(mapCanvas, view, getMapState());
       if (tab === 'game' && performance.now() - lastStatus > 250) { lastStatus = performance.now(); syncStatus(); }
+      if (tab === 'online' && onlinePanel && performance.now() - lastOnline > 400) { lastOnline = performance.now(); onlinePanel.sync(); }
     },
-    refresh() { if (!open) return; if (tab === 'graphics') syncGraphics(); if (tab === 'character') syncCharacters(); if (tab === 'controls') syncControls(); },
+    refresh() { if (!open) return; if (tab === 'graphics') syncGraphics(); if (tab === 'character') syncCharacters(); if (tab === 'controls') syncControls(); if (tab === 'online') onlinePanel?.sync(); },
     syncGraphics
   };
 }

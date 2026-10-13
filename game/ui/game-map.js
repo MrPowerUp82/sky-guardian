@@ -6,14 +6,14 @@ import {
 // once into an offscreen canvas; the minimap and the full map only blit it and
 // draw the live markers on top.
 //
-// state = { hero:{x,z}, aim:{x,z}, enemy:{x,z}|null, rings:[[x,z]], fires:[[x,z]], meteors:[{x,z,falling}] }
+// state = { hero:{x,z}, aim:{x,z}, enemy:{x,z}|null, rings:[[x,z]], fires:[[x,z]], meteors:[{x,z,falling}], peers?:[{x,z,name}] }
 
 const COLORS = {
   outside: '#587a47', paved: '#a9aeb6', lawn: '#8bb369', park: '#4e8444', plaza: '#cdc6b4',
   road: '#434953', roadEdge: '#2c3037', dash: '#cfc896',
   lowRise: '#cfd4dc', highRise: '#f1f3f7', buildingEdge: 'rgba(55,64,80,.75)',
   limit: 'rgba(255,255,255,.55)',
-  hero: '#ffffff', heroEdge: '#1d6dff', enemy: '#ff3b4d', ring: '#38e8ff', fire: '#ff9a2e', meteor: '#ff5a3c'
+  hero: '#ffffff', heroEdge: '#1d6dff', enemy: '#ff3b4d', ring: '#38e8ff', fire: '#ff9a2e', meteor: '#ff5a3c', peer: '#3ee08a'
 };
 
 export class GameMap {
@@ -189,6 +189,12 @@ export class GameMap {
         ctx.fillStyle = COLORS.enemy; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#fff'; ctx.stroke();
         if (labelled) label(ctx, p.x, p.y - r * 2, 'JASON');
       }
+    }
+    for (const peer of state.peers || []) {
+      const p = place(peer.x, peer.z);
+      ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.05, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.peer; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+      if (labelled) label(ctx, p.x, p.y - r * 2, peer.name);
     }
   }
 
