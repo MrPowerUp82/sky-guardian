@@ -1,5 +1,5 @@
 {
-  "version": "5204a0eba9",
+  "version": "d01dda7609",
   "core": [
     "./",
     "./index.html",
@@ -33,6 +33,8 @@
     "./game/net/interpolation.js",
     "./game/net/net-session.js",
     "./game/net/protocol.js",
+    "./game/net/remote-clips.js",
+    "./game/net/remote-hero.js",
     "./game/net/room.js",
     "./game/net/rules.js",
     "./game/net/transport.js",
@@ -41,6 +43,7 @@
     "./game/ui/device.js",
     "./game/ui/game-map.js",
     "./game/ui/map-math.js",
+    "./game/ui/online-panel.js",
     "./game/ui/pause-menu.js",
     "./game/ui/touch-controls.js",
     "./game/ui/touch-math.js",

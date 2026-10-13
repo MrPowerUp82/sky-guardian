@@ -11,6 +11,8 @@ import { MeteorEvent } from './game/events/meteor-event.js';
 import { BuildingFireEvent, selectBuildingTarget, createBuildingFireSpots } from './game/events/building-fire-event.js';
 import { DynamicEventSystem } from './game/events/dynamic-event-system.js';
 import { EnemyPoise, enemyLevelStats } from './game/combat/enemy-poise.js';
+import { SnapshotBuffer, yawToQuat, quatToYaw } from './game/net/interpolation.js';
+import { chooseTarget, attackHits, scaledBossHealth } from './game/net/rules.js';
 import { makeRoadCenters, classifyDistrict, lotFacingRotation, chunkKey, snapFocusToLightTexels } from './game/world/city-layout.js';
 import { SkyDome } from './game/fx/sky-dome.js';
 import { PostFx, postFxQualityFromUrl } from './game/fx/post-fx.js';
@@ -1662,6 +1664,8 @@ const ENEMY_SPAWN = new THREE.Vector3(0, GROUND_EPS, 185);
 const ENEMY_RESPAWN_DELAY = 7;
 let enemyLevel = 1;
 let enemyStats = enemyLevelStats(1);
+// V21 online: filled in by the session code further down; null while playing solo.
+let netSession = null;
 let enemyRespawnTimer = -1;
 let enemyEnraged = false;
 let enemyFlash = 0;
@@ -1753,16 +1757,18 @@ function scheduleEnemyEvents(slotName, speed) {
   return enemyEventQueue.length;
 }
 function dispatchEnemyEvent(event) {
-  if (!event || event.type !== 'damage' || !enemyAlive || playerDead) return;
+  if (!event || event.type !== 'damage' || !enemyAlive) return;
   const hitbox = hitboxById(enemyAnimConfig, event.hitboxId);
   const origin = boneWorldPoint(enemyBoneMap, hitbox, enemyRoot, 1.05);
-  const heroCenter = hero.position.clone().add(new THREE.Vector3(0, 1.0, 0));
   const radius = Number(event.radius) || Number(hitbox?.radius) || 2.2;
-  if (origin.distanceTo(heroCenter) > radius + .85) return;
-  const dir = heroCenter.clone().sub(origin); dir.y = 0;
-  if (dir.lengthSq() < .001) dir.set(0,0,1).applyQuaternion(enemyRoot.quaternion);
-  dir.normalize();
-  damagePlayer(Number(event.damage)||1, dir);
+  for (const target of bossTargets()) {
+    const center = new THREE.Vector3(target.x, target.y + 1.0, target.z);
+    if (origin.distanceTo(center) > radius + .85) continue;
+    const dir = center.clone().sub(origin); dir.y = 0;
+    if (dir.lengthSq() < .001) dir.set(0,0,1).applyQuaternion(enemyRoot.quaternion);
+    dir.normalize();
+    applyBossHit(target, Number(event.damage)||1, dir);
+  }
 }
 function updateEnemyEvents(dt) {
   if (!enemyEventQueue.length) return;
@@ -1903,6 +1909,7 @@ function interruptEnemy() {
 }
 
 function damageEnemy(amount, source=null, knockback=0, label='') {
+  if (netSession?.isGuest) return guestDamageEnemy(amount, source, knockback, label);
   if (!enemyReady || !enemyAlive || enemyHitInvuln > 0) return false;
   enemyHealth = Math.max(0, enemyHealth - amount);
   enemyHitInvuln = .10;
@@ -1974,7 +1981,17 @@ function defeatEnemy() {
 function applyEnemyLevel(level) {
   enemyLevel = Math.max(1, level);
   enemyStats = enemyLevelStats(enemyLevel);
-  enemyMaxHealth = enemyStats.maxHealth;
+  enemyMaxHealth = scaledBossHealth(enemyStats.maxHealth, netSession?.isHost ? netSession?.playerCount : 1);
+}
+
+// A player joined or left mid-fight: keep Jason at the same fraction of the new maximum.
+function rescaleBossForPlayers() {
+  const max = scaledBossHealth(enemyStats.maxHealth, netSession?.isHost ? netSession?.playerCount : 1);
+  if (max === enemyMaxHealth) return;
+  const ratio = enemyMaxHealth > 0 ? enemyHealth / enemyMaxHealth : 1;
+  enemyMaxHealth = max;
+  enemyHealth = enemyAlive ? Math.max(1, Math.round(max * ratio)) : 0;
+  updateCombatHUD();
 }
 
 // A road crossing 45–110 m away from Superman, preferring the closest fit.
@@ -2062,7 +2079,7 @@ function damagePlayer(amount, fromDirection) {
 }
 
 function beginEnemyAttack(kind='combo') {
-  if (!enemyAlive || enemyActionLocked || enemyAttackCooldown > 0 || playerDead) return;
+  if (!enemyAlive || enemyActionLocked || enemyAttackCooldown > 0 || !bossTargets().length) return;
   let candidates, timeScale, impact, damage, range, cooldown, slotName;
   if (kind === 'dash') {
     slotName = 'specialAttack';
@@ -2097,16 +2114,11 @@ function beginEnemyAttack(kind='combo') {
 }
 
 function triggerEnemyAttackImpact() {
-  if (!enemyAlive || playerDead) return;
+  if (!enemyAlive) return;
   const dir = new THREE.Vector3(0,0,1).applyQuaternion(enemyRoot.quaternion).normalize();
   const origin = enemyRoot.position.clone().add(new THREE.Vector3(0,1.0,0)).addScaledVector(dir, 1.05);
-  const target = hero.position.clone().add(new THREE.Vector3(0,1.0,0));
-  const delta = target.sub(origin);
-  const dist = delta.length();
-  if (dist > enemyAttackRange || Math.abs(hero.position.y - enemyRoot.position.y) > 3.2) return;
-  const n = delta.normalize();
-  if (n.dot(dir) < .08) return;
-  damagePlayer(enemyAttackDamage, dir);
+  const victims = attackHits(bossTargets(), { origin, dir, range: enemyAttackRange, baseY: enemyRoot.position.y });
+  for (const victim of victims) applyBossHit(victim, enemyAttackDamage, dir);
 }
 
 function updateEnemy(dt, time) {
@@ -2144,9 +2156,10 @@ function updateEnemy(dt, time) {
       triggerEnemyAttackImpact();
     }
   }
-  if (playerDead) { enemyIdle(); return; }
+  const target = chooseTarget(bossTargets(), enemyRoot.position);
+  if (!target) { enemyIdle(); return; }
 
-  const toHero = hero.position.clone().sub(enemyRoot.position);
+  const toHero = new THREE.Vector3(target.x, target.y, target.z).sub(enemyRoot.position);
   const verticalDelta = toHero.y;
   const horizontal = new THREE.Vector3(toHero.x, 0, toHero.z);
   const distance = horizontal.length();
@@ -2193,6 +2206,21 @@ function enemyUnderAim(maxDistance=280, radius=1.20) {
   return closest.distanceTo(center) <= radius;
 }
 
+// Everyone the boss may chase or hit. Solo: just the hero. Online host: the hero plus
+// every remote player that is alive. Guests never run the boss AI.
+function bossTargets() {
+  const targets = [];
+  if (!playerDead) targets.push({ id: 'local', x: hero.position.x, y: hero.position.y, z: hero.position.z });
+  const remotes = netSession?.isHost ? netSession?.remoteLatest() ?? [] : [];
+  for (const remote of remotes) if (!remote.dead) targets.push(remote);
+  return targets;
+}
+
+function applyBossHit(victim, amount, dir) {
+  if (victim.id === 'local') damagePlayer(amount, dir);
+  else netSession?.sendHit(victim.id, amount, [dir.x, dir.y, dir.z]);
+}
+
 function triggerNormalPunchImpact() {
   if (!enemyAlive) return;
   const dir = new THREE.Vector3(0,0,1).applyQuaternion(hero.quaternion).normalize();
@@ -2237,7 +2265,7 @@ function updateEnemyAttackWarning(dt) {
   const warning = enemyAttackWarning;
   if (warning.active) {
     warning.elapsed += dt;
-    if (warning.elapsed >= warning.duration || !enemyAlive || playerDead) warning.active = false;
+    if (warning.elapsed >= warning.duration || !enemyAlive || !bossTargets().length) warning.active = false;
   }
   warning.group.visible = warning.active && enemyRoot.visible;
   if (!warning.group.visible) return;
@@ -3739,13 +3767,132 @@ function stopHeatVision(overheated=false) {
   }
 }
 
-function damageEnemyHeat(amount) {
+function damageEnemyHeat(amount, kind = 'heat') {
+  if (netSession?.isGuest) { guestHeatDamage(amount, kind); return; }
   if (!enemyReady || !enemyAlive) return;
   enemyHealth = Math.max(0, enemyHealth - amount);
   updateCombatHUD();
   cameraShake = Math.max(cameraShake, .035);
   if (enemyHealth <= 0) defeatEnemy();
   else checkEnemyEnrage();
+}
+
+// ---------------------------------------------------------------------------
+// V21 online boss: the host simulates Jason, guests mirror him
+// ---------------------------------------------------------------------------
+function applyRemoteDamage({ amount, label, kb, src, from }) {
+  // Heat vision and ice breath arrive as small accumulated ticks: no stagger, no hitstop.
+  if (label === '~heat') { damageEnemyHeat(amount); return; }
+  if (label === '~ice') { enemyChill = 1; damageEnemyHeat(amount, 'ice'); return; }
+  const who = netSession?.players.find(p => p.id === from)?.name || 'Aliado';
+  damageEnemy(amount, new THREE.Vector3(src[0], src[1], src[2]), kb, label ? `${label} · ${who}` : '');
+}
+
+function bossStateForNet() {
+  return {
+    p: [enemyRoot.position.x, enemyRoot.position.y, enemyRoot.position.z], y: enemyRoot.rotation.y,
+    clip: enemyCurrentAction?.getClip?.().name || '', rate: enemyCurrentAction?.timeScale ?? 1, tok: enemyActionToken,
+    hp: enemyHealth, max: enemyMaxHealth, rage: enemyEnraged, lvl: enemyLevel, alive: enemyAlive, lock: enemyActionLocked
+  };
+}
+
+const bossMirror = new SnapshotBuffer({ delayMs: 120 });
+const ONE_SHOT_BOSS_CLIP = /attack|_hr_|flyback|deflect/i;
+let mirroredBoss = null;
+let mirrorClip = '';
+let mirrorToken = -1;
+let guestHitCooldown = 0;
+const guestHeat = { amount: 0, kind: 'heat', clock: 0 };
+
+function resetBossMirrorVisuals() {
+  enemyDeathFall = 0;
+  enemyVisual.rotation.set(0, 0, 0);
+  enemyMarker.material.opacity = .78;
+  enemyMarker.material.color.set(mirroredBoss?.rage ? 0xff6a1a : 0xff263e);
+  enemyActionLocked = false;
+  if (enemyMixer) enemyMixer.stopAllAction();
+  enemyCurrentAction = null;
+  enemyCurrentAnimName = '';
+  mirrorClip = '';
+  mirrorToken = -1;
+}
+
+// Guest: a world snapshot from the host (about 10 per second).
+function applyBossMirror(b) {
+  mirroredBoss = b;
+  bossMirror.push(performance.now(), { x: b.p[0], y: b.p[1], z: b.p[2], q: yawToQuat(b.y) });
+  if (b.lvl !== enemyLevel) { enemyLevel = b.lvl; enemyStats = enemyLevelStats(b.lvl); }
+  enemyHealth = b.hp;
+  enemyMaxHealth = b.max;
+  if (b.rage !== enemyEnraged) { enemyEnraged = b.rage; enemyMarker.material.color.set(b.rage ? 0xff6a1a : 0xff263e); }
+  if (b.alive !== enemyAlive) {
+    enemyAlive = b.alive;
+    if (b.alive) resetBossMirrorVisuals();
+    else { enemyDeathFall = 0; enemyMarker.material.opacity = .18; showMessage('JASON DERROTADO!', 2200); }
+  }
+  updateCombatHUD();
+}
+
+// Guest, every frame: place Jason where the host says he is and play the host's clip.
+function updateBossMirror(dt) {
+  guestHitCooldown = Math.max(0, guestHitCooldown - dt);
+  guestHeat.clock += dt;
+  if (guestHeat.amount > 0 && guestHeat.clock > .25) flushGuestHeat();
+  if (!enemyReady || !mirroredBoss) return;
+  const b = mirroredBoss;
+  enemyMarker.visible = enemyAlive;
+  enemyMarker.rotation.z += dt * (enemyEnraged ? 2.2 : .75);
+  updateEnemyFlash(dt);
+  const pose = bossMirror.sample(performance.now());
+  if (pose) {
+    enemyRoot.position.set(pose.x, pose.y, pose.z);
+    enemyRoot.rotation.y = quatToYaw(pose.q);
+  }
+  if (!enemyAlive) {
+    enemyDeathFall = Math.min(1, enemyDeathFall + dt / .6);
+    const fall = enemyDeathFall * enemyDeathFall * (3 - 2 * enemyDeathFall);
+    enemyVisual.rotation.x = -1.3 * fall;
+  }
+  if (b.clip && (b.clip !== mirrorClip || b.tok !== mirrorToken)) {
+    mirrorClip = b.clip;
+    mirrorToken = b.tok;
+    const clip = enemyFindClip([b.clip]);
+    if (clip) enemyPlayClip(clip, .12, ONE_SHOT_BOSS_CLIP.test(b.clip), b.rate || 1);
+  } else if (enemyCurrentAction) {
+    enemyCurrentAction.timeScale = b.rate || 1;
+  }
+}
+
+// Guest: a hit lands visually right away; the host decides the damage.
+function guestDamageEnemy(amount, source, knockback, label) {
+  if (!enemyReady || !enemyAlive || guestHitCooldown > 0) return false;
+  guestHitCooldown = .1;
+  const from = source || hero.position;
+  const hitPoint = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.4, 0));
+  const away = hitPoint.clone().sub(from).setY(0);
+  if (away.lengthSq() < .001) away.set(0, 0, 1);
+  away.normalize();
+  const heavy = amount >= 40;
+  bursts.sparks(hitPoint, { count: heavy ? 38 : 16, power: heavy ? 1.3 : .8, dir: away, cone: 1 });
+  requestHitStop(heavy ? .11 : .065);
+  spawnDamageNumber(enemyRoot.position.clone().add(new THREE.Vector3(0, 2.5, 0)), amount, heavy ? 'heavy' : 'hit');
+  cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
+  netSession?.sendDamage({ amount, label: label || '', kb: knockback || 0, src: [from.x, from.y, from.z] });
+  return true;
+}
+
+// Guest: heat vision / ice breath tick every frame; send them as one request per ~250 ms.
+function guestHeatDamage(amount, kind) {
+  if (!enemyReady || !enemyAlive) return;
+  guestHeat.amount += amount;
+  guestHeat.kind = kind;
+  if (guestHeat.amount >= 3) flushGuestHeat();
+}
+function flushGuestHeat() {
+  if (guestHeat.amount <= 0) return;
+  netSession?.sendDamage({ amount: guestHeat.amount, label: `~${guestHeat.kind}`, kb: 0, src: [hero.position.x, hero.position.y, hero.position.z] });
+  guestHeat.amount = 0;
+  guestHeat.clock = 0;
 }
 
 // Ice Breath hurts and chills Jason while he stands in the cone: damage arrives
@@ -3763,7 +3910,7 @@ function applyIceBreathDamage(origin, direction, dt) {
   if (iceDamageClock < .2) return;
   const amount = ICE_BREATH_TUNING.damagePerSecond * iceDamageClock;
   iceDamageClock = 0;
-  damageEnemyHeat(amount);
+  damageEnemyHeat(amount, 'ice');
   spawnDamageNumber(center.clone().add(new THREE.Vector3(0, 1.3, 0)), amount, 'hit');
   bursts.sparks(center, { count: 5, power: .5, color: [.55, .9, 1.4] });
 }
