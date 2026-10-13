@@ -168,3 +168,13 @@ Em jogo: etiqueta com o nome sobre cada herói remoto e um ponto de cor no minim
 5. Espelho do Jason e dos eventos (`world-mirror`) e os ganchos de dano.
 6. Morte/renascimento online e escala da vida do Jason.
 7. Workflow de publicação no Pages e passagem de teste manual com dois aparelhos.
+
+## 12. Mudanças feitas ao planejar
+
+Decididas ao ler o código para escrever o plano (`docs/superpowers/plans/2026-10-13-online-coop.md`):
+
+1. O `build` do handshake é a constante `NET_BUILD` em `game/net/protocol.js`, não o hash do pré-cache do PWA (este só é conhecido depois que o service worker responde).
+2. O `pose` leva `q` (quaternion) em vez de só `y` (yaw): o Superman voa com inclinação e rolagem.
+3. Online, o loop de rede e o espelho continuam rodando durante a pausa; só o mundo simulado do anfitrião congela enquanto ele está no menu.
+4. Módulo extra `game/net/rules.js` com as regras puras (escolha de alvo, acerto do Jason, escala de vida).
+5. O `pose` inclui `char` e `skin`, para o remoto trocar de modelo sem mensagem extra.
