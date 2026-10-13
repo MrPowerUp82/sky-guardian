@@ -14,7 +14,7 @@
 
 1. **Build do handshake:** o `build` é a constante `NET_BUILD` em `game/net/protocol.js`, que se incrementa à mão quando o protocolo muda. O hash do pré-cache do PWA só é conhecido depois que o service worker responde, tarde demais para o `hello`.
 2. **Pose com quaternion:** o `pose` leva `q` (quaternion) em vez de só `y` (yaw), porque o Superman voa com inclinação e rolagem (`hero.quaternion`). O Jason continua com yaw.
-3. **Pausa online:** o jogo congela o mundo ao pausar. Online, o loop de rede e o espelho continuam rodando durante a pausa; só o mundo simulado do **anfitrião** congela enquanto ele está no menu (limitação documentada, ver Task 13).
+3. **Pausa online:** o jogo congela o mundo ao pausar. Online, o loop de rede e o espelho continuam rodando durante a pausa; só o mundo simulado do **anfitrião** congela enquanto ele está no menu (limitação documentada na Task 13).
 4. **Módulo extra `game/net/rules.js`:** funções puras de regra (escolha de alvo, acerto do Jason, escala de vida) que o spec citava dentro de `main.js`; ficam fora para serem testadas.
 5. **Pose inclui `char` e `skin`:** assim o remoto troca de modelo se o outro jogador mudar de personagem, sem mensagem extra.
 
@@ -34,12 +34,12 @@
 
 Entradas e falhas que a spec implica mas nenhuma tarefa exercitaria sem pedido explícito. Cada linha tem o teste na tarefa dona do código.
 
-1. **Mensagem hostil ou gigante** (JSON inválido, `__proto__`, números `NaN`/`Infinity`, string de 1 MB, dano 1e9): nunca lança, nunca chega ao jogo, dano é limitado → Task 1.
+1. **Mensagem hostil ou gigante** (JSON inválido, `__proto__`, números `NaN`/`Infinity`, string de 1 MB, dano 1e9) e **convidado que inunda o anfitrião**: nunca lança, nunca chega ao jogo, dano é limitado e o excesso de mensagens por segundo é descartado → Tasks 1 e 4.
 2. **Pacotes atrasados, duplicados ou fora de ordem** e buracos longos sem pose: a interpolação não pula para trás e a extrapolação é limitada → Task 2.
 3. **Quinto jogador, código digitado errado (minúsculas, espaços, letras ambíguas) e sala inexistente**: mensagens claras, nenhum estado preso em "conectando" → Tasks 1, 4 e 8.
-4. **Convidado sai (ou cai) enquanto o Jason o persegue**: o Jason escolhe outro alvo ou fica parado, nunca persegue um jogador que não existe mais → Tasks 2 e 12.
-5. **Anfitrião sai com o menu aberto / convidado entra no meio de um meteoro e de incêndios**: a sala volta ao solo sem travar e o recém-chegado recebe o mundo atual → Tasks 4, 11 e 13.
-6. **Solo intacto:** com `netSession === null` todos os ganchos são no-ops → Task 14 (teste de contrato em `main.js`).
+4. **Convidado sai (ou cai) enquanto o Jason o persegue**: o Jason escolhe outro alvo ou fica parado, nunca persegue um jogador que não existe mais → Tasks 2, 5 e 10.
+5. **Anfitrião sai com o menu aberto / convidado entra no meio de um meteoro e de incêndios**: a sala volta ao solo sem travar e o recém-chegado recebe o mundo atual → Tasks 4, 11 e 12.
+6. **Solo intacto:** com `netSession === null` todos os ganchos são no-ops → Task 12 (teste de contrato em `main.js`).
 
 ---
 
@@ -60,11 +60,11 @@ Entradas e falhas que a spec implica mas nenhuma tarefa exercitaria sem pedido e
 | `game/ui/pause-menu.js` | modificar | Aba Online opcional |
 | `game/ui/game-map.js` | modificar | Pontos dos outros jogadores no mapa |
 | `game/characters/registry.js` | modificar | `model: { height, yaw }` por personagem |
-| `main.js` | modificar | Ganchos finos (Tasks 10–13) |
+| `main.js` | modificar | Ganchos finos e a seção `V21 ONLINE CO-OP` (Tasks 10–12) |
 | `index.html`, `style.css` | modificar | Script do PeerJS, estilos da aba Online |
 | `tools/vendor-peerjs.mjs`, `package.json` | criar/modificar | Embarcar o PeerJS, scripts de checagem |
-| `.github/workflows/pages.yml` | criar | Publicação no GitHub Pages |
-| `tests/net-*.test.js` | criar | Um arquivo de teste por módulo |
+| `tools/build-site.mjs`, `.github/workflows/pages.yml` | criar | Montar `_site/` e publicar no GitHub Pages (Task 13) |
+| `tests/net-*.test.js`, `tests/build-site.test.js` | criar | Um arquivo de teste por módulo; `net-main-wiring.test.js` fixa os ganchos do `main.js` |
 
 ---
 
@@ -206,6 +206,7 @@ export const NET_TUNING = Object.freeze({
   maxDamagePerRequest: 60,
   maxNameLength: 16,
   maxMessageChars: 4096,
+  maxMessagesPerSecond: 120,
   worldLimit: 5000
 });
 
@@ -861,7 +862,8 @@ export function createPeerNetwork({ Peer = globalThis.Peer, iceServers = DEFAULT
         });
         peer.on('error', err => { if (!opened) { clearTimeout(timer); peer.destroy(); reject(mapError(err)); } });
         peer.on('connection', conn => {
-          conn.on('open', () => { const wrapped = wrapConn(conn); if (handler) handler(wrapped); else pending.push(wrapped); });
+          const wrapped = wrapConn(conn);            // listen for data right away: nothing is lost before 'open'
+          conn.on('open', () => { if (handler) handler(wrapped); else pending.push(wrapped); });
         });
       });
     },
@@ -875,12 +877,12 @@ export function createPeerNetwork({ Peer = globalThis.Peer, iceServers = DEFAULT
         peer.on('error', err => fail(mapError(err)));
         peer.on('open', () => {
           const conn = peer.connect(peerIdForRoom(code), { serialization: 'json', reliable: true });
+          const wrapped = wrapConn(conn);            // listen for data right away: nothing is lost before 'open'
+          const close = wrapped.close;
+          wrapped.close = () => { close(); peer.destroy(); };
           conn.on('open', () => {
             if (settled) return;
             settled = true; clearTimeout(timer);
-            const wrapped = wrapConn(conn);
-            const close = wrapped.close;
-            wrapped.close = () => { close(); peer.destroy(); };
             resolve(wrapped);
           });
           conn.on('error', err => fail(mapError(err)));
@@ -1071,6 +1073,23 @@ test('host closing ends the room for every guest', async () => {
   assert.equal(g1.closed && g2.closed && host.closed, true);
 });
 
+test('a guest flooding the host is throttled to the per-second budget, and the budget refills', async () => {
+  const c = clock();
+  const net = new MemoryNetwork();
+  const host = await Room.host({ network: net, player: who('Host'), now: c.now, rand: () => .1 });
+  const g1 = await Room.join({ network: net, code: host.code, player: who('G1'), now: c.now });
+  await flush();
+  let got = 0;
+  host.on('message', () => got++);
+  for (let i = 0; i < 400; i++) g1.send({ t: 'dmg', amount: 1, label: '', kb: 0, src: [0, 0, 0] });
+  await flush();
+  assert.equal(got, NET_TUNING.maxMessagesPerSecond);
+  c.t += 1000;
+  for (let i = 0; i < 5; i++) g1.send({ t: 'dmg', amount: 1, label: '', kb: 0, src: [0, 0, 0] });
+  await flush();
+  assert.equal(got, NET_TUNING.maxMessagesPerSecond + 5);
+});
+
 test('a dropped connection closes the guest with "lost"', async () => {
   const { host, guests: [g1] } = await lobby();
   const reasons = [];
@@ -1179,7 +1198,7 @@ export class Room extends Emitter {
 
   // --- host side ------------------------------------------------------------------
   _hostAccept(conn) {
-    const entry = { conn, id: null, lastSeen: this.now() };
+    const entry = { conn, id: null, lastSeen: this.now(), windowAt: this.now(), count: 0 };
     conn.onMessage(text => this._hostReceive(entry, text));
     conn.onClose(() => { if (entry.id) this._dropPeer(entry.id, 'lost'); });
   }
@@ -1201,6 +1220,10 @@ export class Room extends Emitter {
       this.emit('players', this.playerList);
       return;
     }
+    // A guest cannot flood the host: whatever exceeds the per-second budget is dropped.
+    const now = this.now();
+    if (now - entry.windowAt >= 1000) { entry.windowAt = now; entry.count = 0; }
+    if (++entry.count > this.tuning.maxMessagesPerSecond) return;
     if (!FROM_GUEST.has(msg.t)) return;
     if (msg.t === 'ping') return this._sendRaw(entry.conn, { t: 'pong', ts: msg.ts });
     if (msg.t === 'pong') return;
@@ -1786,4 +1809,1784 @@ Expected: PASS (new and existing).
 ```bash
 git add game/events/dynamic-event-system.js game/fire/fire-system.js tests/net-mirror-support.test.js
 git commit -m "feat(net): mirror mode for events and fire snapshot sync"
+```
+
+---
+
+### Task 7: Embarcar o PeerJS
+
+**Files:**
+- Create: `tools/vendor-peerjs.mjs`, `vendor/peerjs/peerjs.min.js`, `vendor/peerjs/LICENSE`, `vendor/peerjs/VERSION` (gerados pelo script)
+- Modify: `index.html`, `package.json`, `pwa-manifest.json` e `sw.js` (regenerados por `npm run pwa`)
+- Test: `tests/net-vendor.test.js`
+
+**Interfaces:**
+- Consumes: nada.
+- Produces: o global `window.Peer` (carregado por script clássico antes do `main.js`), usado por `createPeerNetwork()` (Task 3); script `npm run vendor:peerjs`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/net-vendor.test.js`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { buildManifest } from '../tools/build-pwa.mjs';
+
+const file = rel => new URL(`../${rel}`, import.meta.url);
+const read = rel => fs.readFileSync(file(rel), 'utf8');
+
+test('PeerJS is vendored, loaded before main.js and precached for offline play', async () => {
+  assert.ok(fs.existsSync(file('vendor/peerjs/peerjs.min.js')), 'run npm run vendor:peerjs');
+  assert.ok(fs.statSync(file('vendor/peerjs/peerjs.min.js')).size > 50_000);
+  assert.match(read('vendor/peerjs/VERSION'), /^\d+\.\d+\.\d+/);
+  assert.ok(fs.existsSync(file('vendor/peerjs/LICENSE')));
+  const html = read('index.html');
+  const peerAt = html.indexOf('./vendor/peerjs/peerjs.min.js');
+  const mainAt = html.indexOf('./main.js');
+  assert.ok(peerAt > 0 && peerAt < mainAt, 'index.html loads peerjs.min.js before main.js');
+  assert.ok(!/<script[^>]+peerjs\.min\.js[^>]+type="module"/.test(html), 'it is a classic script (it defines the global Peer)');
+  const { core } = await buildManifest();
+  assert.ok(core.includes('./vendor/peerjs/peerjs.min.js'), 'service worker precaches it');
+});
+
+test('the vendor script targets a pinned version', () => {
+  const script = read('tools/vendor-peerjs.mjs');
+  assert.match(script, /process\.argv\[2\] \|\| '\d+\.\d+\.\d+'/);
+  assert.match(read('package.json'), /"vendor:peerjs": "node tools\/vendor-peerjs\.mjs"/);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test tests/net-vendor.test.js`
+Expected: FAIL — `run npm run vendor:peerjs`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `tools/vendor-peerjs.mjs`:
+
+```js
+#!/usr/bin/env node
+// Copies the PeerJS browser bundle from jsDelivr into vendor/peerjs/ so the game (and
+// its offline cache) never depends on a CDN at play time.
+//   node tools/vendor-peerjs.mjs            # pinned version below
+//   node tools/vendor-peerjs.mjs 1.5.4
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const VERSION = process.argv[2] || '1.5.4';
+const BASE = `https://cdn.jsdelivr.net/npm/peerjs@${VERSION}/`;
+const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'vendor', 'peerjs');
+const FILES = [['dist/peerjs.min.js', 'peerjs.min.js'], ['LICENSE', 'LICENSE']];
+
+await fs.mkdir(OUT, { recursive: true });
+for (const [remote, local] of FILES) {
+  const res = await fetch(BASE + remote);
+  if (!res.ok) throw new Error(`${remote}: HTTP ${res.status}`);
+  await fs.writeFile(path.join(OUT, local), Buffer.from(await res.arrayBuffer()));
+}
+await fs.writeFile(path.join(OUT, 'VERSION'), `${VERSION}\n`);
+console.log(`peerjs ${VERSION} -> vendor/peerjs/`);
+```
+
+In `package.json`, add to `"scripts"` the line `"vendor:peerjs": "node tools/vendor-peerjs.mjs",` (next to `"vendor"`), and extend `"check"` so it also runs, appended before `&& node --check sw.js`:
+`node --check tools/vendor-peerjs.mjs && node --check game/net/protocol.js && node --check game/net/interpolation.js && node --check game/net/rules.js && node --check game/net/transport.js && node --check game/net/room.js && node --check game/net/net-session.js && node --check game/net/remote-clips.js && node --check game/net/remote-hero.js && node --check game/ui/online-panel.js`
+
+In `index.html`, add immediately before `<script src="./pwa.js" defer></script>`:
+```html
+  <script src="./vendor/peerjs/peerjs.min.js"></script>
+```
+
+Then run (needs network once):
+```bash
+npm run vendor:peerjs
+npm run pwa
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test tests/net-vendor.test.js tests/pwa.test.js`
+Expected: PASS (the PWA staleness test passes because `npm run pwa` regenerated the manifest and `sw.js`).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/vendor-peerjs.mjs vendor/peerjs index.html package.json pwa-manifest.json sw.js tests/net-vendor.test.js
+git commit -m "feat(net): vendor PeerJS and precache it for offline play"
+```
+
+---
+
+### Task 8: Aba Online, minimapa e textos de erro
+
+**Files:**
+- Create: `game/ui/online-panel.js`
+- Modify: `game/ui/pause-menu.js`, `game/ui/game-map.js`, `style.css`
+- Test: `tests/net-online-ui.test.js`
+
+**Interfaces:**
+- Consumes: `normalizeRoomCode`, `NET_TUNING` (Task 1); `getCharacter`, `getSkin` do registry.
+- Produces:
+  - `ERROR_TEXT`, `describeNetError(code) -> string` (qualquer código desconhecido cai na mensagem de rede)
+  - `cleanPlayerName(text) -> string` (sem controles, aparado, no máximo 16 caracteres; pode ser `''`)
+  - `validateJoinInput(text) -> { ok: boolean, code: string, error: string }`
+  - `describePlayer(player) -> string` (`"Ana · Superman (Armadura (MultiVersus))"`)
+  - `createOnlinePanel({ getState, getName, setName, onCreate, onJoin, onLeave }) -> { element, sync() }`, onde `getState() -> { status: 'idle'|'busy'|'connected', code, isHost, players:[{ id, name, char, skin, self, isHost }], error }`; `onCreate()`, `onJoin(code)`, `onLeave()`
+  - `createPauseMenu({ …, onlinePanel })`: com `onlinePanel` presente, aparece a aba **Online** (`'online'`)
+  - `state.peers: [{ x, z, name }]` aceito por `GameMap` (ponto verde no minimapa e no mapa grande)
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/net-online-ui.test.js`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { describeNetError, ERROR_TEXT, cleanPlayerName, validateJoinInput, describePlayer } from '../game/ui/online-panel.js';
+import { GameMap } from '../game/ui/game-map.js';
+
+test('every failure the net layer can raise has a Portuguese message', () => {
+  for (const code of ['full', 'version', 'closed', 'taken', 'not-found', 'network', 'timeout', 'lost', 'host-left']) {
+    assert.ok(ERROR_TEXT[code] && /[a-zà-ú]/i.test(ERROR_TEXT[code]), code);
+  }
+  assert.equal(describeNetError('something-new'), ERROR_TEXT.network);
+  assert.equal(describeNetError(undefined), ERROR_TEXT.network);
+});
+
+test('player names are cleaned and capped', () => {
+  assert.equal(cleanPlayerName('  Ana  '), 'Ana');
+  assert.equal(cleanPlayerName('A\u0007b\u0000c'), 'Abc');
+  assert.equal(cleanPlayerName('x'.repeat(40)).length, 16);
+  assert.equal(cleanPlayerName(null), '');
+});
+
+test('join input accepts messy codes and explains bad ones', () => {
+  assert.deepEqual(validateJoinInput(' ab cd '), { ok: true, code: 'ABCD', error: '' });
+  for (const text of ['', 'abc', 'abcde', 'ab0d', 'ab-']) {
+    const r = validateJoinInput(text);
+    assert.equal(r.ok, false, text);
+    assert.match(r.error, /código/i);
+  }
+});
+
+test('describePlayer names the hero and the skin', () => {
+  assert.equal(describePlayer({ name: 'Ana', char: 'superman', skin: 'armor' }), 'Ana · Superman (Armadura (MultiVersus))');
+  assert.equal(describePlayer({ name: 'Bia', char: 'flash', skin: 'classic' }), 'Bia · The Flash (Clássico)');
+});
+
+test('the pause menu shows the Online tab only when a panel is supplied', () => {
+  const menu = fs.readFileSync(new URL('../game/ui/pause-menu.js', import.meta.url), 'utf8');
+  assert.match(menu, /\['online', 'Online'\]/);
+  assert.match(menu, /onlinePanel = null/);
+  assert.match(menu, /onlinePanel \? TABS : TABS\.filter/);
+});
+
+test('the map draws other players as green dots with names on the big map', () => {
+  const calls = { arc: 0, fills: [], texts: [] };
+  const ctx = new Proxy({}, {
+    get: (t, k) => {
+      if (k === 'arc') return () => { calls.arc++; };
+      if (k === 'fillText' || k === 'strokeText') return (text) => { calls.texts.push(text); };
+      return k in t ? t[k] : () => {};
+    },
+    set: (t, k, v) => { t[k] = v; if (k === 'fillStyle') calls.fills.push(v); return true; }
+  });
+  const state = { rings: [], fires: [], meteors: [], enemy: null, peers: [{ x: 10, z: 20, name: 'Bia' }, { x: -5, z: 3, name: 'Caio' }] };
+  const place = (x, z) => ({ x, y: z, clamped: false, angle: 0 });
+  GameMap.prototype._markers.call({}, ctx, state, place, 6, true);
+  assert.equal(calls.arc, 2);
+  assert.ok(calls.fills.includes('#3ee08a'));
+  assert.ok(calls.texts.includes('Bia') && calls.texts.includes('Caio'));
+  calls.arc = 0;
+  GameMap.prototype._markers.call({}, ctx, { ...state, peers: undefined }, place, 6, true);   // solo state has no peers
+  assert.equal(calls.arc, 0);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test tests/net-online-ui.test.js`
+Expected: FAIL — module `online-panel.js` not found.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `game/ui/online-panel.js`:
+
+```js
+import { normalizeRoomCode, NET_TUNING } from '../net/protocol.js';
+import { getCharacter, getSkin } from '../characters/registry.js';
+
+// The "Online" tab of the pause menu: pure DOM, no game logic. The game supplies the
+// current state and the callbacks.
+
+export const ERROR_TEXT = {
+  full: 'A sala está cheia (máximo de 4 jogadores).',
+  version: 'Esta sala usa outra versão do jogo. Recarregue a página e tente de novo.',
+  closed: 'A sala foi encerrada.',
+  taken: 'Esse código já está em uso. Tente criar a sala de novo.',
+  'not-found': 'Sala não encontrada. Confira o código.',
+  network: 'Não foi possível conectar. Sua rede pode bloquear conexões diretas entre jogadores.',
+  timeout: 'A sala não respondeu a tempo.',
+  lost: 'A conexão com a sala foi perdida.',
+  'host-left': 'O anfitrião saiu: a sala foi encerrada.'
+};
+export const describeNetError = code => ERROR_TEXT[code] || ERROR_TEXT.network;
+
+export function cleanPlayerName(text) {
+  return String(text ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, NET_TUNING.maxNameLength);
+}
+
+export function validateJoinInput(text) {
+  const code = normalizeRoomCode(text);
+  return code
+    ? { ok: true, code, error: '' }
+    : { ok: false, code: '', error: `Código inválido: são ${NET_TUNING.roomCodeLength} letras ou números (sem I, L, O, 0 e 1).` };
+}
+
+export function describePlayer(player) {
+  return `${player.name} · ${getCharacter(player.char).name} (${getSkin(player.char, player.skin).name})`;
+}
+
+function h(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) if (c) node.append(c);
+  return node;
+}
+
+export function createOnlinePanel({ getState, getName, setName, onCreate, onJoin, onLeave }) {
+  const nameInput = h('input', { type: 'text', class: 'pm-input', maxlength: String(NET_TUNING.maxNameLength), placeholder: 'Seu nome', 'aria-label': 'Seu nome', autocomplete: 'off' });
+  nameInput.addEventListener('change', () => { setName(cleanPlayerName(nameInput.value)); sync(); });
+  const codeInput = h('input', { type: 'text', class: 'pm-input pm-code-input', maxlength: '8', placeholder: 'CÓDIGO', 'aria-label': 'Código da sala', autocomplete: 'off', autocapitalize: 'characters' });
+  const message = h('p', { class: 'pm-hint' });
+  const body = h('div', { class: 'pm-online-body' });
+  const element = h('div', { class: 'pm-panel', 'data-tab': 'online' }, [
+    h('div', { class: 'pm-online-name' }, [h('label', { text: 'Seu nome' }), nameInput]), body, message
+  ]);
+  let localError = '';
+
+  function join() {
+    const result = validateJoinInput(codeInput.value);
+    localError = result.error;
+    if (!result.ok) return sync();
+    onJoin(result.code);
+  }
+
+  function sync() {
+    const state = getState();
+    if (document.activeElement !== nameInput) nameInput.value = getName();
+    const connected = state.status === 'connected';
+    const busy = state.status === 'busy';
+    nameInput.disabled = connected || busy;
+    if (connected) {
+      const copy = h('button', { type: 'button', class: 'pm-secondary', text: 'Copiar código' });
+      copy.addEventListener('click', () => { navigator.clipboard?.writeText(state.code).catch(() => {}); copy.textContent = 'Copiado!'; });
+      body.replaceChildren(
+        h('div', { class: 'pm-room' }, [
+          h('small', { text: state.isHost ? 'Você é o anfitrião · passe o código aos amigos' : 'Conectado à sala' }),
+          h('strong', { class: 'pm-room-code', text: state.code }),
+          copy
+        ]),
+        h('ul', { class: 'pm-players' }, state.players.map(p => h('li', { class: p.self ? 'self' : '' }, [
+          h('span', { text: describePlayer(p) }),
+          p.isHost ? h('em', { text: 'anfitrião' }) : null,
+          p.self ? h('em', { text: 'você' }) : null
+        ]))),
+        h('button', { type: 'button', class: 'pm-secondary', text: 'Sair da sala', onclick: () => onLeave() })
+      );
+      message.textContent = state.isHost ? 'Se você sair, a sala é encerrada para todos.' : 'Se o anfitrião sair, a sala é encerrada.';
+      message.classList.remove('pm-error');
+      return;
+    }
+    const create = h('button', { type: 'button', class: 'pm-primary', text: busy ? 'Conectando…' : 'Criar sala', onclick: () => { localError = ''; onCreate(); } });
+    const enter = h('button', { type: 'button', class: 'pm-secondary', text: 'Entrar', onclick: join });
+    create.disabled = enter.disabled = codeInput.disabled = busy;
+    body.replaceChildren(
+      h('div', { class: 'pm-online-row' }, [create]),
+      h('div', { class: 'pm-online-row' }, [codeInput, enter])
+    );
+    const error = localError || state.error;
+    message.textContent = error || 'Jogue com até 3 amigos contra o mesmo Jason. Um de vocês cria a sala e passa o código.';
+    message.classList.toggle('pm-error', !!error);
+  }
+
+  codeInput.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') join(); });
+  nameInput.addEventListener('keydown', e => e.stopPropagation());
+  return { element, sync };
+}
+```
+
+In `game/ui/pause-menu.js`:
+1. Replace the `TABS` line with
+```js
+const TABS = [['game', 'Jogo'], ['character', 'Personagem'], ['online', 'Online'], ['graphics', 'Gráficos'], ['map', 'Mapa'], ['controls', 'Controles']];
+```
+2. In the `createPauseMenu({ … })` destructuring, after `getSkinIds = () => ({}), onSelectSkin = () => {}` add `, onlinePanel = null`.
+3. In the "shell" section, replace `for (const [id, text] of TABS) {` with
+```js
+  const tabs = onlinePanel ? TABS : TABS.filter(([id]) => id !== 'online');
+  for (const [id, text] of tabs) {
+```
+and replace `for (const panel of [gamePanel, characterPanel, graphicsPanel, mapPanel, controlsPanel]) panels.set(panel.dataset.tab, panel);` with
+```js
+  for (const panel of [gamePanel, characterPanel, onlinePanel?.element, graphicsPanel, mapPanel, controlsPanel]) if (panel) panels.set(panel.dataset.tab, panel);
+```
+4. In `show(id)` add `if (id === 'online') onlinePanel?.sync();` after the `controls` line. In the returned object: in `tick()` add before the closing brace
+```js
+      if (tab === 'online' && onlinePanel && performance.now() - lastOnline > 400) { lastOnline = performance.now(); onlinePanel.sync(); }
+```
+and declare `let lastOnline = 0;` next to `let lastStatus = 0;`. In `refresh()` add `if (tab === 'online') onlinePanel?.sync();`.
+
+In `game/ui/game-map.js`: add `peer: '#3ee08a'` to `COLORS`, update the `state = {…}` comment to mention `peers:[{x,z,name}]`, and at the end of `_markers` (after the `if (state.enemy) { … }` block, inside the method) add:
+```js
+    for (const peer of state.peers || []) {
+      const p = place(peer.x, peer.z);
+      ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.05, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.peer; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+      if (labelled) label(ctx, p.x, p.y - r * 2, peer.name);
+    }
+```
+(The test imports `GameMap`; if the class is not exported by that name, export it — `grep -n "class GameMap" game/ui/game-map.js` shows the declaration.)
+
+Append to `style.css`:
+```css
+/* Online tab */
+.pm-online-name { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+.pm-online-name label { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #7f93b5; }
+.pm-input { flex: 1; min-width: 0; padding: 10px 12px; font: 600 14px/1.2 Inter, system-ui, sans-serif; color: #fff; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.2); border-radius: 10px; }
+.pm-code-input { text-transform: uppercase; letter-spacing: .3em; text-align: center; font-size: 18px; }
+.pm-online-body { display: grid; gap: 12px; }
+.pm-online-row { display: flex; gap: 10px; }
+.pm-online-row button { flex: none; padding: 10px 18px; }
+.pm-room { display: grid; gap: 6px; justify-items: center; padding: 16px; border-radius: 14px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.14); }
+.pm-room small { color: #9fb3d8; font-size: 12px; }
+.pm-room-code { font-size: 44px; letter-spacing: .35em; padding-left: .35em; color: #fff; text-shadow: 0 0 22px rgba(80,160,255,.55); }
+.pm-players { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pm-players li { display: flex; gap: 8px; align-items: baseline; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,.05); font-size: 13px; }
+.pm-players li.self { border: 1px solid rgba(80,160,255,.55); }
+.pm-players em { margin-left: auto; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #7f93b5; font-style: normal; }
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test tests/net-online-ui.test.js tests/settings-and-map.test.js tests/flash-character.test.js`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add game/ui/online-panel.js game/ui/pause-menu.js game/ui/game-map.js style.css tests/net-online-ui.test.js
+git commit -m "feat(net): Online tab, error messages and peers on the minimap"
+```
+
+---
+
+### Task 9: Heróis remotos (`remote-hero.js`)
+
+**Files:**
+- Create: `game/net/remote-clips.js` (puro, sem three.js, para poder ser testado em Node), `game/net/remote-hero.js`
+- Modify: `game/characters/registry.js`
+- Test: `tests/net-remote-hero.test.js`
+
+**Interfaces:**
+- Consumes: `getCharacter`, `getSkin` do registry (agora com `model: { height, yaw }`); `prepareFlashClips` de `game/characters/flash-controller.js`; `remapVerticalTracks`, `heroClipVerticalMode` de `hero-motion.js`; `SkeletonUtils.clone`.
+- Produces:
+  - Em `remote-clips.js` (puro): `FALLBACK_CLIP`, `resolveClipName(available: Map|Set, wanted, fallback) -> string`, `clipPlaysOnce(name) -> boolean`
+  - `class RemoteHeroes({ scene, loadGltf })`, onde `loadGltf(url) -> Promise<gltf>` devolve um glTF já preparado para a cena (sombras, etc.), com cache feito por quem chama
+    - `update(dt, remotes)` (`remotes` = saída de `NetSession#remotes()`), `positions() -> [{ x, z, name }]`, `clear()`, `count`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/net-remote-hero.test.js`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { resolveClipName, clipPlaysOnce } from '../game/net/remote-clips.js';
+import { CHARACTERS, getCharacter } from '../game/characters/registry.js';
+
+test('resolveClipName keeps a known clip, else the fallback, else anything, else empty', () => {
+  const clips = new Map([['stand', 1], ['run', 2]]);
+  assert.equal(resolveClipName(clips, 'run', 'stand'), 'run');
+  assert.equal(resolveClipName(clips, 'C003_Flying', 'stand'), 'stand');
+  assert.equal(resolveClipName(clips, '', 'stand'), 'stand');
+  assert.equal(resolveClipName(clips, 'nope', 'missing'), 'stand');
+  assert.equal(resolveClipName(new Map(), 'run', 'stand'), '');
+  assert.equal(resolveClipName(new Set(['a']), 'x', 'y'), 'a');
+});
+
+test('one-shot actions are recognised by name, loops are not', () => {
+  for (const name of ['C003_Punch_01', 'C003_N_Attack_01', 'C003_Land', 'C003_Flying_Intro', 'C003_LeapAttack', 'punch', 'jumpUp', 'jumpDown']) assert.equal(clipPlaysOnce(name), true, name);
+  for (const name of ['C003_Idle_01', 'C003_Run_01', 'C003_Flying', 'run', 'stand', 'walk', '']) assert.equal(clipPlaysOnce(name), false, name);
+});
+
+test('every character declares the model height and yaw the remote copy needs', () => {
+  for (const c of CHARACTERS) {
+    assert.ok(c.model.height > 1 && c.model.height < 3, c.id);
+    assert.equal(typeof c.model.yaw, 'number');
+  }
+  assert.equal(getCharacter('superman').model.yaw, -Math.PI / 2);   // MultiVersus rig faces +X
+  assert.equal(getCharacter('flash').model.yaw, 0);                  // Mixamo rigs face +Z
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test tests/net-remote-hero.test.js`
+Expected: FAIL — module `remote-clips.js` not found.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `game/characters/registry.js`, add one line to each character object, right after its `modelUrl:` line:
+- Superman: `model: { height: 2.05, yaw: -Math.PI / 2 },`
+- The Flash: `model: { height: 1.9, yaw: 0 },`
+
+Create `game/net/remote-clips.js`:
+
+```js
+// Clip selection for remote heroes. No three.js here, so it is unit-tested in Node.
+
+export const FALLBACK_CLIP = { superman: 'C003_Idle_01', flash: 'stand' };
+const ONCE = /punch|attack|land|intro|leap|jumpup|jumpdown|stop|exit|start/i;
+
+/** The clip to play: the one requested if the model has it, else the idle fallback, else any. */
+export function resolveClipName(available, wanted, fallback) {
+  if (wanted && available.has(wanted)) return wanted;
+  if (available.has(fallback)) return fallback;
+  return available.keys().next().value ?? '';
+}
+
+/** One-shot actions play once and hold their last frame; everything else loops. */
+export const clipPlaysOnce = name => !!name && ONCE.test(name);
+```
+
+Create `game/net/remote-hero.js`:
+
+```js
+import * as THREE from 'three';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { getCharacter, getSkin } from '../characters/registry.js';
+import { prepareFlashClips } from '../characters/flash-controller.js';
+import { remapVerticalTracks, heroClipVerticalMode } from '../../hero-motion.js';
+import { FALLBACK_CLIP, resolveClipName, clipPlaysOnce } from './remote-clips.js';
+
+// The other players' heroes: a cloned skinned model, a mixer, a name tag, and the pose
+// stream from NetSession#remotes(). Heavy effects (lightning, heat vision) are not
+// mirrored: only pose, model and skin.
+
+function nameSprite(text, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.font = '700 30px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 7; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.strokeText(text, 128, 34);
+  ctx.fillStyle = color; ctx.fillText(text, 128, 34);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
+  sprite.scale.set(1.8, .45, 1);
+  sprite.renderOrder = 8;
+  return sprite;
+}
+
+function supermanClips(animations) {
+  const clips = new Map();
+  for (const clip of animations) {
+    const mapped = remapVerticalTracks(clip.tracks, heroClipVerticalMode(clip.name, 'air'));
+    const tracks = mapped.map((t, i) => (t !== clip.tracks[i] ? new THREE.VectorKeyframeTrack(t.name, clip.tracks[i].times, t.values) : t));
+    clips.set(clip.name, new THREE.AnimationClip(clip.name, clip.duration, tracks));
+  }
+  return clips;
+}
+
+export class RemoteHeroes {
+  constructor({ scene, loadGltf }) {
+    this.scene = scene;
+    this.loadGltf = loadGltf;
+    this.entries = new Map();
+    this._quat = new THREE.Quaternion();
+  }
+
+  get count() { return this.entries.size; }
+
+  positions() {
+    return [...this.entries.values()].filter(e => e.shown).map(e => ({ x: e.group.position.x, z: e.group.position.z, name: e.name }));
+  }
+
+  update(dt, remotes) {
+    const seen = new Set();
+    for (const remote of remotes) {
+      seen.add(remote.id);
+      let entry = this.entries.get(remote.id);
+      if (entry && (entry.char !== remote.char || entry.skin !== remote.skin || entry.name !== remote.name)) { this._dispose(entry); entry = null; }
+      if (!entry) entry = this._create(remote);
+      this._applyPose(entry, remote);
+      entry.mixer?.update(dt);
+    }
+    for (const [id, entry] of [...this.entries]) if (!seen.has(id)) { this._dispose(entry); this.entries.delete(id); }
+  }
+
+  clear() {
+    for (const entry of this.entries.values()) this._dispose(entry);
+    this.entries.clear();
+  }
+
+  // --- internals ------------------------------------------------------------------
+  _create(remote) {
+    const def = getCharacter(remote.char);
+    const skin = getSkin(remote.char, remote.skin);
+    const group = new THREE.Group();
+    group.name = `remote-${remote.id}`;
+    const orientation = new THREE.Group();
+    orientation.rotation.y = def.model.yaw;
+    group.add(orientation);
+    // Stand-in until the real model has loaded: a coloured pillar.
+    const marker = new THREE.Mesh(new THREE.CapsuleGeometry(.3, def.model.height - .6, 4, 8), new THREE.MeshStandardMaterial({ color: def.accent, roughness: .6 }));
+    marker.position.y = def.model.height / 2;
+    group.add(marker);
+    const label = nameSprite(remote.name, '#ffffff');
+    label.position.y = def.model.height + .45;
+    group.add(label);
+    this.scene.add(group);
+
+    const entry = {
+      id: remote.id, char: remote.char, skin: remote.skin, name: remote.name, def, group, orientation, marker, label,
+      mixer: null, clips: null, action: null, clipName: '', shown: true, disposed: false
+    };
+    this.entries.set(remote.id, entry);
+    this.loadGltf(skin.modelUrl).then(gltf => {
+      if (entry.disposed) return;
+      const root = cloneSkeleton(gltf.scene);
+      root.traverse(o => { if (o.isSkinnedMesh) o.frustumCulled = false; });
+      const box = new THREE.Box3().setFromObject(root);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const scale = size.y > 0 ? def.model.height / size.y : 1;
+      root.scale.setScalar(scale);
+      root.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+      orientation.add(root);
+      group.remove(marker);
+      entry.mixer = new THREE.AnimationMixer(root);
+      entry.clips = remote.char === 'flash' ? prepareFlashClips(gltf.animations) : supermanClips(gltf.animations);
+      entry.model = root;
+    }).catch(err => console.warn('[net] modelo remoto não carregou:', skin.modelUrl, err));
+    return entry;
+  }
+
+  _applyPose(entry, remote) {
+    const { pose } = remote;
+    entry.group.position.set(pose.x, pose.y, pose.z);
+    entry.group.quaternion.set(pose.q[0], pose.q[1], pose.q[2], pose.q[3]);
+    entry.shown = !remote.dead;
+    entry.group.visible = entry.shown;
+    if (entry.clips && remote.clip) this._play(entry, resolveClipName(entry.clips, remote.clip, FALLBACK_CLIP[remote.char]));
+  }
+
+  _play(entry, name) {
+    if (!name || name === entry.clipName) return;
+    const clip = entry.clips.get(name);
+    if (!clip) return;
+    const next = entry.mixer.clipAction(clip);
+    next.reset();
+    const once = clipPlaysOnce(name);
+    next.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, once ? 1 : Infinity);
+    next.clampWhenFinished = once;
+    if (entry.action) { entry.action.fadeOut(.15); next.fadeIn(.15); } else next.setEffectiveWeight(1);
+    next.play();
+    entry.action = next;
+    entry.clipName = name;
+  }
+
+  _dispose(entry) {
+    entry.disposed = true;
+    this.scene.remove(entry.group);
+    entry.mixer?.stopAllAction();
+    entry.label.material.map?.dispose();
+    entry.label.material.dispose();
+    entry.marker.geometry.dispose();
+    entry.marker.material.dispose();
+  }
+}
+```
+
+The superman clips reuse `remapVerticalTracks` exactly as `main.js` does for the local hero, so a remote Superman has the same pelvis handling and does not sink or float while flying.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test tests/net-remote-hero.test.js tests/flash-character.test.js`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add game/net/remote-clips.js game/net/remote-hero.js game/characters/registry.js tests/net-remote-hero.test.js
+git commit -m "feat(net): remote hero models with pose playback and name tags"
+```
+
+---
+
+### Task 10: Jason com anfitrião autoritativo (`main.js`)
+
+**Files:**
+- Modify: `main.js`
+- Test: `tests/net-main-wiring.test.js` (criado aqui; as Tasks 11 e 12 acrescentam testes)
+
+**Interfaces:**
+- Consumes: `chooseTarget`, `attackHits`, `scaledBossHealth` (Task 2); `SnapshotBuffer`, `yawToQuat`, `quatToYaw` (Task 2).
+- Produces (funções de `main.js` usadas pelas Tasks 11 e 12; nenhuma delas altera o jogo solo):
+  - `let netSession = null` (a Task 12 o preenche; **todo** uso antes da Task 12 é `netSession?.…`)
+  - `bossTargets() -> [{ id, x, y, z }]`, `applyBossHit(victim, amount, dir)`
+  - `bossStateForNet() -> boss` (host), `applyBossMirror(boss)`, `updateBossMirror(dt)`, `resetBossMirrorVisuals()` (convidado)
+  - `guestDamageEnemy(...)`, `guestHeatDamage(amount, kind)`, `flushGuestHeat()`; `damageEnemy` e `damageEnemyHeat` redirecionam quando `netSession?.isGuest`
+  - `applyRemoteDamage({ amount, label, kb, src, from })` (host)
+  - `rescaleBossForPlayers()`; `applyEnemyLevel` passa a escalar a vida
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/net-main-wiring.test.js`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+// main.js is a browser module with no test harness, so the wiring is pinned with
+// contract tests (same approach as the other integration tests in this repo) and
+// exercised for real by the two-tab checklist in the plan.
+const main = fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8');
+const fn = name => main.match(new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\r?\\n\\}`))?.[0] || '';
+
+test('the boss chooses among every living player, and swings hit every player in range', () => {
+  assert.match(main, /let netSession = null;/);
+  const targets = fn('bossTargets');
+  assert.match(targets, /netSession\?\.isHost/);
+  assert.match(targets, /remoteLatest\(\)/);
+  assert.match(targets, /!playerDead/);
+  const update = fn('updateEnemy');
+  assert.match(update, /chooseTarget\(bossTargets\(\), enemyRoot\.position\)/);
+  assert.doesNotMatch(update, /hero\.position\.clone\(\)\.sub\(enemyRoot\.position\)/);
+  assert.match(fn('triggerEnemyAttackImpact'), /attackHits\(bossTargets\(\)/);
+  assert.match(fn('triggerEnemyAttackImpact'), /applyBossHit\(/);
+  assert.match(fn('dispatchEnemyEvent'), /for \(const target of bossTargets\(\)\)/);
+  assert.match(fn('beginEnemyAttack'), /!bossTargets\(\)\.length/);
+  assert.match(fn('applyBossHit'), /netSession\?\.sendHit\(victim\.id/);
+  assert.match(fn('applyBossHit'), /damagePlayer\(amount, dir\)/);
+});
+
+test('guests never run the boss AI: their hits become requests, the host applies them', () => {
+  assert.match(fn('damageEnemy'), /^function damageEnemy\([^)]*\) \{\s*if \(netSession\?\.isGuest\) return guestDamageEnemy\(/);
+  assert.match(fn('damageEnemyHeat'), /netSession\?\.isGuest/);
+  assert.match(fn('guestDamageEnemy'), /netSession\?\.sendDamage\(/);
+  assert.match(fn('applyRemoteDamage'), /damageEnemyHeat\(amount\)/);
+  assert.match(fn('applyRemoteDamage'), /damageEnemy\(amount, new THREE\.Vector3\(src\[0\], src\[1\], src\[2\]\), kb,/);
+  assert.match(fn('bossStateForNet'), /enemyActionToken/);
+  assert.match(fn('applyBossMirror'), /enemyStats = enemyLevelStats\(b\.lvl\)/);
+});
+
+test('boss health scales with the number of players (host only)', () => {
+  assert.match(fn('applyEnemyLevel'), /scaledBossHealth\(enemyStats\.maxHealth, netSession\?\.isHost \? netSession\?\.playerCount : 1\)/);
+  assert.match(fn('rescaleBossForPlayers'), /scaledBossHealth\(/);
+});
+
+test('solo safety: before the online section, netSession is only ever touched with ?.', () => {
+  const marker = main.indexOf('V21 ONLINE CO-OP — session lifecycle');
+  const solo = marker > 0 ? main.slice(0, marker) : main;
+  assert.doesNotMatch(solo, /\bnetSession\.[a-zA-Z]/);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test tests/net-main-wiring.test.js`
+Expected: FAIL — `let netSession = null;` not found.
+
+- [ ] **Step 3: Write minimal implementation**
+
+All edits are in `main.js`.
+
+**3a. Imports.** After the line `import { EnemyPoise, enemyLevelStats } from './game/combat/enemy-poise.js';` add:
+```js
+import { SnapshotBuffer, yawToQuat, quatToYaw } from './game/net/interpolation.js';
+import { chooseTarget, attackHits, scaledBossHealth } from './game/net/rules.js';
+```
+
+**3b. State.** After `let enemyStats = enemyLevelStats(1);` add:
+```js
+// V21 online: filled in by the session code further down; null while playing solo.
+let netSession = null;
+```
+
+**3c. Scaling.** Replace `applyEnemyLevel`:
+```js
+function applyEnemyLevel(level) {
+  enemyLevel = Math.max(1, level);
+  enemyStats = enemyLevelStats(enemyLevel);
+  enemyMaxHealth = enemyStats.maxHealth;
+}
+```
+with
+```js
+function applyEnemyLevel(level) {
+  enemyLevel = Math.max(1, level);
+  enemyStats = enemyLevelStats(enemyLevel);
+  enemyMaxHealth = scaledBossHealth(enemyStats.maxHealth, netSession?.isHost ? netSession?.playerCount : 1);
+}
+
+// A player joined or left mid-fight: keep Jason at the same fraction of the new maximum.
+function rescaleBossForPlayers() {
+  const max = scaledBossHealth(enemyStats.maxHealth, netSession?.isHost ? netSession?.playerCount : 1);
+  if (max === enemyMaxHealth) return;
+  const ratio = enemyMaxHealth > 0 ? enemyHealth / enemyMaxHealth : 1;
+  enemyMaxHealth = max;
+  enemyHealth = enemyAlive ? Math.max(1, Math.round(max * ratio)) : 0;
+  updateCombatHUD();
+}
+```
+
+**3d. Targets and victims.** Add right after the `enemyUnderAim` function:
+```js
+// Everyone the boss may chase or hit. Solo: just the hero. Online host: the hero plus
+// every remote player that is alive. Guests never run the boss AI.
+function bossTargets() {
+  const targets = [];
+  if (!playerDead) targets.push({ id: 'local', x: hero.position.x, y: hero.position.y, z: hero.position.z });
+  const remotes = netSession?.isHost ? netSession?.remoteLatest() ?? [] : [];
+  for (const remote of remotes) if (!remote.dead) targets.push(remote);
+  return targets;
+}
+
+function applyBossHit(victim, amount, dir) {
+  if (victim.id === 'local') damagePlayer(amount, dir);
+  else netSession?.sendHit(victim.id, amount, [dir.x, dir.y, dir.z]);
+}
+```
+
+**3e. Boss swings.** Replace `dispatchEnemyEvent`:
+```js
+function dispatchEnemyEvent(event) {
+  if (!event || event.type !== 'damage' || !enemyAlive || playerDead) return;
+  const hitbox = hitboxById(enemyAnimConfig, event.hitboxId);
+  const origin = boneWorldPoint(enemyBoneMap, hitbox, enemyRoot, 1.05);
+  const heroCenter = hero.position.clone().add(new THREE.Vector3(0, 1.0, 0));
+  const radius = Number(event.radius) || Number(hitbox?.radius) || 2.2;
+  if (origin.distanceTo(heroCenter) > radius + .85) return;
+  const dir = heroCenter.clone().sub(origin); dir.y = 0;
+  if (dir.lengthSq() < .001) dir.set(0,0,1).applyQuaternion(enemyRoot.quaternion);
+  dir.normalize();
+  damagePlayer(Number(event.damage)||1, dir);
+}
+```
+with
+```js
+function dispatchEnemyEvent(event) {
+  if (!event || event.type !== 'damage' || !enemyAlive) return;
+  const hitbox = hitboxById(enemyAnimConfig, event.hitboxId);
+  const origin = boneWorldPoint(enemyBoneMap, hitbox, enemyRoot, 1.05);
+  const radius = Number(event.radius) || Number(hitbox?.radius) || 2.2;
+  for (const target of bossTargets()) {
+    const center = new THREE.Vector3(target.x, target.y + 1.0, target.z);
+    if (origin.distanceTo(center) > radius + .85) continue;
+    const dir = center.clone().sub(origin); dir.y = 0;
+    if (dir.lengthSq() < .001) dir.set(0,0,1).applyQuaternion(enemyRoot.quaternion);
+    dir.normalize();
+    applyBossHit(target, Number(event.damage)||1, dir);
+  }
+}
+```
+In `beginEnemyAttack`, change the first line from
+`if (!enemyAlive || enemyActionLocked || enemyAttackCooldown > 0 || playerDead) return;`
+to
+`if (!enemyAlive || enemyActionLocked || enemyAttackCooldown > 0 || !bossTargets().length) return;`
+
+Replace `triggerEnemyAttackImpact`:
+```js
+function triggerEnemyAttackImpact() {
+  if (!enemyAlive || playerDead) return;
+  const dir = new THREE.Vector3(0,0,1).applyQuaternion(enemyRoot.quaternion).normalize();
+  const origin = enemyRoot.position.clone().add(new THREE.Vector3(0,1.0,0)).addScaledVector(dir, 1.05);
+  const target = hero.position.clone().add(new THREE.Vector3(0,1.0,0));
+  const delta = target.sub(origin);
+  const dist = delta.length();
+  if (dist > enemyAttackRange || Math.abs(hero.position.y - enemyRoot.position.y) > 3.2) return;
+  const n = delta.normalize();
+  if (n.dot(dir) < .08) return;
+  damagePlayer(enemyAttackDamage, dir);
+}
+```
+with
+```js
+function triggerEnemyAttackImpact() {
+  if (!enemyAlive) return;
+  const dir = new THREE.Vector3(0,0,1).applyQuaternion(enemyRoot.quaternion).normalize();
+  const origin = enemyRoot.position.clone().add(new THREE.Vector3(0,1.0,0)).addScaledVector(dir, 1.05);
+  const victims = attackHits(bossTargets(), { origin, dir, range: enemyAttackRange, baseY: enemyRoot.position.y });
+  for (const victim of victims) applyBossHit(victim, enemyAttackDamage, dir);
+}
+```
+(`attackHits` reproduces the old checks: range to the chest point, ±3.2 m of height, and `dot >= .08`.)
+
+In `updateEnemyAttackWarning`, change `|| !enemyAlive || playerDead) warning.active = false;` to `|| !enemyAlive || !bossTargets().length) warning.active = false;`.
+
+In `updateEnemy`, replace
+```js
+  if (playerDead) { enemyIdle(); return; }
+
+  const toHero = hero.position.clone().sub(enemyRoot.position);
+```
+with
+```js
+  const target = chooseTarget(bossTargets(), enemyRoot.position);
+  if (!target) { enemyIdle(); return; }
+
+  const toHero = new THREE.Vector3(target.x, target.y, target.z).sub(enemyRoot.position);
+```
+
+**3f. Guest redirects.** At the very top of `damageEnemy`, before `if (!enemyReady || !enemyAlive || enemyHitInvuln > 0) return false;`, add:
+```js
+  if (netSession?.isGuest) return guestDamageEnemy(amount, source, knockback, label);
+```
+At the very top of `damageEnemyHeat(amount)` add a `kind` parameter and the redirect, so it reads:
+```js
+function damageEnemyHeat(amount, kind = 'heat') {
+  if (netSession?.isGuest) { guestHeatDamage(amount, kind); return; }
+  if (!enemyReady || !enemyAlive) return;
+```
+In `applyIceBreathDamage`, change `damageEnemyHeat(amount);` to `damageEnemyHeat(amount, 'ice');`.
+
+**3g. Host and guest helpers.** Add this block right after `damageEnemyHeat` (so the whole online-boss logic sits next to the code it mirrors):
+```js
+// ---------------------------------------------------------------------------
+// V21 online boss: the host simulates Jason, guests mirror him
+// ---------------------------------------------------------------------------
+function applyRemoteDamage({ amount, label, kb, src, from }) {
+  // Heat vision and ice breath arrive as small accumulated ticks: no stagger, no hitstop.
+  if (label === '~heat') { damageEnemyHeat(amount); return; }
+  if (label === '~ice') { enemyChill = 1; damageEnemyHeat(amount, 'ice'); return; }
+  const who = netSession?.players.find(p => p.id === from)?.name || 'Aliado';
+  damageEnemy(amount, new THREE.Vector3(src[0], src[1], src[2]), kb, label ? `${label} · ${who}` : '');
+}
+
+function bossStateForNet() {
+  return {
+    p: [enemyRoot.position.x, enemyRoot.position.y, enemyRoot.position.z], y: enemyRoot.rotation.y,
+    clip: enemyCurrentAction?.getClip?.().name || '', rate: enemyCurrentAction?.timeScale ?? 1, tok: enemyActionToken,
+    hp: enemyHealth, max: enemyMaxHealth, rage: enemyEnraged, lvl: enemyLevel, alive: enemyAlive, lock: enemyActionLocked
+  };
+}
+
+const bossMirror = new SnapshotBuffer({ delayMs: 120 });
+const ONE_SHOT_BOSS_CLIP = /attack|_hr_|flyback|deflect/i;
+let mirroredBoss = null;
+let mirrorClip = '';
+let mirrorToken = -1;
+let guestHitCooldown = 0;
+const guestHeat = { amount: 0, kind: 'heat', clock: 0 };
+
+function resetBossMirrorVisuals() {
+  enemyDeathFall = 0;
+  enemyVisual.rotation.set(0, 0, 0);
+  enemyMarker.material.opacity = .78;
+  enemyMarker.material.color.set(mirroredBoss?.rage ? 0xff6a1a : 0xff263e);
+  enemyActionLocked = false;
+  if (enemyMixer) enemyMixer.stopAllAction();
+  enemyCurrentAction = null;
+  enemyCurrentAnimName = '';
+  mirrorClip = '';
+  mirrorToken = -1;
+}
+
+// Guest: a world snapshot from the host (about 10 per second).
+function applyBossMirror(b) {
+  mirroredBoss = b;
+  bossMirror.push(performance.now(), { x: b.p[0], y: b.p[1], z: b.p[2], q: yawToQuat(b.y) });
+  if (b.lvl !== enemyLevel) { enemyLevel = b.lvl; enemyStats = enemyLevelStats(b.lvl); }
+  enemyHealth = b.hp;
+  enemyMaxHealth = b.max;
+  if (b.rage !== enemyEnraged) { enemyEnraged = b.rage; enemyMarker.material.color.set(b.rage ? 0xff6a1a : 0xff263e); }
+  if (b.alive !== enemyAlive) {
+    enemyAlive = b.alive;
+    if (b.alive) resetBossMirrorVisuals();
+    else { enemyDeathFall = 0; enemyMarker.material.opacity = .18; showMessage('JASON DERROTADO!', 2200); }
+  }
+  updateCombatHUD();
+}
+
+// Guest, every frame: place Jason where the host says he is and play the host's clip.
+function updateBossMirror(dt) {
+  guestHitCooldown = Math.max(0, guestHitCooldown - dt);
+  guestHeat.clock += dt;
+  if (guestHeat.amount > 0 && guestHeat.clock > .25) flushGuestHeat();
+  if (!enemyReady || !mirroredBoss) return;
+  const b = mirroredBoss;
+  enemyMarker.visible = enemyAlive;
+  enemyMarker.rotation.z += dt * (enemyEnraged ? 2.2 : .75);
+  updateEnemyFlash(dt);
+  const pose = bossMirror.sample(performance.now());
+  if (pose) {
+    enemyRoot.position.set(pose.x, pose.y, pose.z);
+    enemyRoot.rotation.y = quatToYaw(pose.q);
+  }
+  if (!enemyAlive) {
+    enemyDeathFall = Math.min(1, enemyDeathFall + dt / .6);
+    const fall = enemyDeathFall * enemyDeathFall * (3 - 2 * enemyDeathFall);
+    enemyVisual.rotation.x = -1.3 * fall;
+  }
+  if (b.clip && (b.clip !== mirrorClip || b.tok !== mirrorToken)) {
+    mirrorClip = b.clip;
+    mirrorToken = b.tok;
+    const clip = enemyFindClip([b.clip]);
+    if (clip) enemyPlayClip(clip, .12, ONE_SHOT_BOSS_CLIP.test(b.clip), b.rate || 1);
+  } else if (enemyCurrentAction) {
+    enemyCurrentAction.timeScale = b.rate || 1;
+  }
+}
+
+// Guest: a hit lands visually right away; the host decides the damage.
+function guestDamageEnemy(amount, source, knockback, label) {
+  if (!enemyReady || !enemyAlive || guestHitCooldown > 0) return false;
+  guestHitCooldown = .1;
+  const from = source || hero.position;
+  const hitPoint = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.4, 0));
+  const away = hitPoint.clone().sub(from).setY(0);
+  if (away.lengthSq() < .001) away.set(0, 0, 1);
+  away.normalize();
+  const heavy = amount >= 40;
+  bursts.sparks(hitPoint, { count: heavy ? 38 : 16, power: heavy ? 1.3 : .8, dir: away, cone: 1 });
+  requestHitStop(heavy ? .11 : .065);
+  spawnDamageNumber(enemyRoot.position.clone().add(new THREE.Vector3(0, 2.5, 0)), amount, heavy ? 'heavy' : 'hit');
+  cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
+  netSession?.sendDamage({ amount, label: label || '', kb: knockback || 0, src: [from.x, from.y, from.z] });
+  return true;
+}
+
+// Guest: heat vision / ice breath tick every frame; send them as one request per ~250 ms.
+function guestHeatDamage(amount, kind) {
+  if (!enemyReady || !enemyAlive) return;
+  guestHeat.amount += amount;
+  guestHeat.kind = kind;
+  if (guestHeat.amount >= 3) flushGuestHeat();
+}
+function flushGuestHeat() {
+  if (guestHeat.amount <= 0) return;
+  netSession?.sendDamage({ amount: guestHeat.amount, label: `~${guestHeat.kind}`, kb: 0, src: [hero.position.x, hero.position.y, hero.position.z] });
+  guestHeat.amount = 0;
+  guestHeat.clock = 0;
+}
+```
+
+- [ ] **Step 4: Run tests, then smoke-test solo play**
+
+Run:
+```bash
+node --check main.js && node --test tests/net-main-wiring.test.js tests/v16-dynamic-events-integration.test.js tests/v17-animation-fixes.test.js tests/flash-character.test.js
+```
+Expected: PASS, except the one `scheduler é atualizado uma vez por frame…` test, which fails on a Windows checkout only because it matches `\n` while the file has CRLF (Task 13 makes it tolerant; on Linux/CI it passes).
+
+Smoke test in the browser (solo must be unchanged): start the preview (`preview_start` with the `sky-guardian` configuration), open `http://localhost:8080/?debug`, click **JOGAR**, then in the console run `window.__sky.state` and confirm `enemyAlive: true`. Walk toward Jason (or run `window.__sky.enemyRoot.position.copy(window.__sky.hero.position).add(new window.__sky.THREE.Vector3(0, 0, 8))`), wait a few seconds: he must chase and hit Superman (HUD health drops), and punching him (`E`) must lower the boss bar. No errors in the console.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add main.js tests/net-main-wiring.test.js
+git commit -m "feat(net): boss targets every player; guest boss mirror and damage requests"
+```
+
+---
+
+### Task 11: Eventos, fogo e interceptação no co-op (`main.js`)
+
+**Files:**
+- Modify: `main.js`
+- Test: `tests/net-main-wiring.test.js` (acrescenta testes)
+
+**Interfaces:**
+- Consumes: `netSession?.broadcastEvent`, `sendCool`, `sendIntercept` (Task 5); `DynamicEventSystem#adopt`, `FireSystem` (Task 6); `MeteorEvent`, `BuildingFireEvent` (já importados em `main.js`).
+- Produces:
+  - `describeEvent(event)`, `fireDescriptor(spot)`, `announceSpawn(event)`
+  - `handleEventCommand(command, { mirrored })` (o comando `meteor-impact` ganha `descriptors` e o `meteor-intercepted` ganha `method`)
+  - `emitEventCommand(command)`
+  - `adoptWorldEvent(kind, data)` (convidado)
+  - `coolFireCone(args)`, `coolFireSphere(args)`, `applyCoolRequest(msg)` (host), `applyInterceptRequest(msg)` (host)
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/net-main-wiring.test.js`:
+
+```js
+import { encode, decode, NET_TUNING } from '../game/net/protocol.js';
+
+test('events: the host announces spawns and ships fire positions with the impact command', () => {
+  assert.match(main, /meteor: \(\.\.\.args\) => announceSpawn\(createMeteorEvent\(\.\.\.args\)\)/);
+  assert.match(main, /buildingFire: \(\.\.\.args\) => announceSpawn\(createBuildingFireEvent\(\.\.\.args\)\)/);
+  assert.match(fn('handleEventCommand'), /function handleEventCommand\(command, \{ mirrored = false \} = \{\}\)/);
+  assert.match(fn('handleEventCommand'), /mirrored \? \(command\.descriptors \|\| \[\]\) : buildMeteorImpactFireDescriptors/);
+  assert.match(fn('handleEventCommand'), /command\.descriptors = descriptors/);
+  assert.match(fn('emitEventCommand'), /if \(netSession\?\.isGuest\) return;/);
+  assert.match(fn('emitEventCommand'), /broadcastEvent\('command', command\)/);
+  assert.match(fn('updateDynamicEvents'), /emitEventCommand\(command\)/);
+  assert.doesNotMatch(fn('updateDynamicEvents'), /handleEventCommand\(command\)/);
+  assert.match(fn('tryInterceptActiveMeteor'), /emitEventCommand\(\{ \.\.\.command, method \}\)/);
+  assert.match(fn('tryInterceptActiveMeteor'), /netSession\?\.isGuest[\s\S]*sendIntercept\(/);
+});
+
+test('events: a guest rebuilds meteors and building fires from the host descriptors', () => {
+  const adopt = fn('adoptWorldEvent');
+  for (const kind of ['command', 'fires', 'spawn-meteor', 'spawn-fire']) assert.match(adopt, new RegExp(`'${kind}'`));
+  assert.match(adopt, /dynamicEventSystem\.adopt\(event\)/);
+  assert.match(adopt, /handleEventCommand\(data, \{ mirrored: true \}\)/);
+});
+
+test('fire: cooling is applied locally and forwarded; the host applies requests without occlusion', () => {
+  assert.match(fn('coolFireCone'), /fireSystem\.applyCoolingCone\(args\)/);
+  assert.match(fn('coolFireCone'), /netSession\?\.sendCool\(/);
+  assert.match(fn('coolFireSphere'), /fireSystem\.applyCoolingSphere\(args\)/);
+  assert.match(main, /const affected = coolFireCone\(\{/);
+  assert.match(main, /coolCone: \(origin, dir, range, halfAngle, dt, rate\) => coolFireCone\(/);
+  assert.match(main, /coolRadius: \(point, radius, dt, rate\) => coolFireSphere\(/);
+  assert.match(fn('applyCoolRequest'), /applyCoolingCone|applyCoolingSphere/);
+});
+
+test('the host keeps the world ticking for everyone while it is busy; solo keeps its old pauses', () => {
+  const update = fn('updateDynamicEvents');
+  assert.match(update, /const controlLocked = netSession \? \(!heroReady \|\| helpVisible\)/);
+  assert.match(update, /playerDead \|\| actionLocked \|\| flightMachine\.busy \|\| leapAttack\.active \|\| helpVisible/);
+});
+
+test('the protocol can carry the largest event payloads within the message limit', () => {
+  const spot = i => ({ id: `meteor-12:impact-fire:${i}`, eventId: 'meteor-12', source: 'meteor-impact', position: { x: -123.456789, y: 0.08, z: 210.123456 }, normal: { x: 0, y: 1, z: 0 }, radius: 2.35, intensity: 1 });
+  const six = Array.from({ length: 6 }, (_, i) => spot(i + 1));
+  const impact = { t: 'event', kind: 'command', data: { type: 'meteor-impact', eventId: 'meteor-12', point: { x: -123.4, y: 0.08, z: 210.1 }, requestedFireCount: 6, descriptors: six } };
+  assert.ok(encode(impact).length < NET_TUNING.maxMessageChars);
+  assert.deepEqual(decode(encode(impact)).data.descriptors.length, 6);
+  const fires = { t: 'event', kind: 'fires', data: { descriptors: six.slice(0, 4).map(s => ({ ...s, buildingId: 'b-123' })) } };
+  assert.ok(decode(encode(fires)));
+  const meteorSpawn = { t: 'event', kind: 'spawn-meteor', data: { id: 'meteor-12', impactPoint: { x: 1, y: 2, z: 3 }, startPosition: { x: 1, y: 360, z: 3 }, warningSeconds: 1.5, fallSeconds: 12, fireCount: 6, state: 'falling', warningElapsed: 1.5, fallElapsed: 3.25, fireIds: [] } };
+  assert.ok(decode(encode(meteorSpawn)));
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test tests/net-main-wiring.test.js`
+Expected: FAIL — `announceSpawn(createMeteorEvent` not found.
+
+- [ ] **Step 3: Write minimal implementation**
+
+All edits are in `main.js`.
+
+**3a. Announce spawns.** Replace
+```js
+const dynamicEventSystem = new DynamicEventSystem({
+  rng: eventRng,
+  factories: {
+    meteor: createMeteorEvent,
+    buildingFire: createBuildingFireEvent
+  }
+});
+```
+with
+```js
+// What the host tells guests about an event: enough to rebuild it (also for late joiners).
+const fireDescriptor = spot => spot && ({
+  id: spot.id, eventId: spot.eventId, buildingId: spot.buildingId, source: spot.source,
+  position: spot.position, normal: spot.normal, radius: spot.radius, intensity: spot.intensity
+});
+function describeEvent(event) {
+  if (event.type === 'meteor') {
+    return {
+      id: event.id, impactPoint: event.impactPoint, startPosition: event.startPosition, warningSeconds: event.warningSeconds,
+      fallSeconds: event.fallSeconds, fireCount: event.fireCount, state: event.state, warningElapsed: event.warningElapsed,
+      fallElapsed: event.fallElapsed, fireIds: [...event.fireIds]
+    };
+  }
+  return { id: event.id, buildingId: event.buildingId, descriptors: event.fireIds.map(id => fireDescriptor(fireSystem.getSpot(id))).filter(Boolean) };
+}
+function announceSpawn(event) {
+  if (event) netSession?.broadcastEvent(event.type === 'meteor' ? 'spawn-meteor' : 'spawn-fire', describeEvent(event));
+  return event;
+}
+
+const dynamicEventSystem = new DynamicEventSystem({
+  rng: eventRng,
+  factories: {
+    meteor: (...args) => announceSpawn(createMeteorEvent(...args)),
+    buildingFire: (...args) => announceSpawn(createBuildingFireEvent(...args))
+  }
+});
+```
+
+**3b. Commands carry the fire positions.** Change the signature `function handleEventCommand(command) {` to
+```js
+function handleEventCommand(command, { mirrored = false } = {}) {
+```
+In its `meteor-impact` branch replace
+```js
+    const descriptors = buildMeteorImpactFireDescriptors(command.eventId, point, requested);
+    const fireIds = fireSystem.addSpots(descriptors);
+```
+with
+```js
+    // The host rolls the fire positions once and ships them with the command; guests use those.
+    const descriptors = mirrored ? (command.descriptors || []) : buildMeteorImpactFireDescriptors(command.eventId, point, requested);
+    command.descriptors = descriptors;
+    const fireIds = fireSystem.addSpots(descriptors);
+```
+In its `meteor-intercepted` branch, add as the first line
+```js
+    meteorInterceptMethod = command.method || meteorInterceptMethod;
+```
+Immediately after `handleEventCommand`, add (and make sure `let meteorInterceptMethod = 'superPunch';`, which already follows, stays where it is):
+```js
+// Host: run the command here, then tell the guests. Guest: commands come only from the host.
+function emitEventCommand(command) {
+  if (netSession?.isGuest) return;
+  handleEventCommand(command);
+  netSession?.broadcastEvent('command', command);
+}
+
+// Guest: rebuild what the host announced.
+function adoptWorldEvent(kind, data) {
+  if (kind === 'command') { handleEventCommand(data, { mirrored: true }); return; }
+  if (kind === 'fires') { fireSystem.addSpots(data.descriptors || []); return; }
+  if (kind === 'spawn-meteor') {
+    const event = new MeteorEvent({
+      id: data.id, impactPoint: data.impactPoint, startPosition: data.startPosition,
+      warningSeconds: data.warningSeconds, fallSeconds: data.fallSeconds, fireCount: data.fireCount
+    });
+    if (data.state) {                                   // late joiner: pick up mid-flight
+      event.state = data.state;
+      event.warningElapsed = data.warningElapsed || 0;
+      event.fallElapsed = data.fallElapsed || 0;
+      event._impactEmitted = data.state === 'impacted';
+    }
+    event.attachFireIds(data.fireIds || []);
+    dynamicEventSystem.adopt(event);
+    if (!data.state || data.state === 'warning') showMessage('ALERTA · METEORO DETECTADO', 1250);
+    return;
+  }
+  if (kind === 'spawn-fire') {
+    fireSystem.addSpots(data.descriptors || []);
+    const event = new BuildingFireEvent({ id: data.id, buildingId: data.buildingId });
+    event.attachFireIds((data.descriptors || []).map(d => d.id));
+    dynamicEventSystem.adopt(event);
+    showMessage('EMERGÊNCIA · INCÊNDIO EM PRÉDIO', 1100);
+  }
+}
+```
+
+**3c. Use `emitEventCommand`.** In `updateDynamicEvents` replace `for (const command of commands) handleEventCommand(command);` with `for (const command of commands) emitEventCommand(command);`. In `tryInterceptActiveMeteor` replace `for (const command of commands) handleEventCommand(command);` with `for (const command of commands) emitEventCommand({ ...command, method });`.
+
+In `updateDynamicEvents`, replace the `controlLocked` definition
+```js
+  const controlLocked = !heroReady || playerDead || actionLocked || flightMachine.busy || leapAttack.active || helpVisible;
+```
+with
+```js
+  // Online, the shared world must not stop because one player is busy punching or dead.
+  const controlLocked = netSession ? (!heroReady || helpVisible)
+    : (!heroReady || playerDead || actionLocked || flightMachine.busy || leapAttack.active || helpVisible);
+```
+
+**3d. Guest interception.** In `tryInterceptActiveMeteor`, right after the line `if (origin.distanceTo(meteorPosition) > Math.max(0, radius) + METEOR_COLLISION_RADIUS) return false;` add:
+```js
+  if (netSession?.isGuest) {                    // the host decides; its commands come back as events
+    if (method === 'supersonic' && speed < METEOR_SMASH_SPEED) return false;
+    netSession?.sendIntercept({ method, origin: [origin.x, origin.y, origin.z], radius, speed });
+    return true;
+  }
+```
+Add, after `trySupersonicMeteorSweep`:
+```js
+function applyInterceptRequest(msg) {
+  tryInterceptActiveMeteor(msg.method, new THREE.Vector3(msg.origin[0], msg.origin[1], msg.origin[2]), msg.radius, msg.speed);
+}
+```
+
+**3e. Cooling.** Add before `updateIceBreath` (anywhere above its first use):
+```js
+// Cooling is applied locally everywhere (instant feedback). A guest also asks the host to
+// apply the same cooling to the authoritative fire, so the fire goes out for everyone.
+function coolFireCone(args) {
+  const affected = fireSystem.applyCoolingCone(args);
+  netSession?.sendCool({
+    shape: 'cone', origin: [args.origin.x, args.origin.y, args.origin.z], dir: [args.direction.x, args.direction.y, args.direction.z],
+    range: args.range, half: args.halfAngleDeg, dt: args.dt, rate: args.rate, radius: 0
+  });
+  return affected;
+}
+function coolFireSphere(args) {
+  const affected = fireSystem.applyCoolingSphere(args);
+  netSession?.sendCool({
+    shape: 'sphere', origin: [args.origin.x, args.origin.y, args.origin.z], dir: [0, 0, 1],
+    range: 0, half: 0, dt: args.dt, rate: args.rate, radius: args.radius
+  });
+  return affected;
+}
+function applyCoolRequest(msg) {
+  const origin = { x: msg.origin[0], y: msg.origin[1], z: msg.origin[2] };
+  if (msg.shape === 'sphere') { fireSystem.applyCoolingSphere({ origin, radius: msg.radius, dt: msg.dt, rate: msg.rate }); return; }
+  fireSystem.applyCoolingCone({
+    origin, direction: { x: msg.dir[0], y: msg.dir[1], z: msg.dir[2] },
+    range: msg.range, halfAngleDeg: msg.half, dt: msg.dt, rate: msg.rate
+  });
+}
+```
+In `updateIceBreath`, change `const affected = fireSystem.applyCoolingCone({` to `const affected = coolFireCone({`. In `createFlashApi`, replace the two cooling members with
+```js
+    coolCone: (origin, dir, range, halfAngle, dt, rate) => coolFireCone({
+      origin, direction: dir, range, halfAngleDeg: halfAngle, dt, rate, occluded: spot => iceBreathOccluded(origin, spot)
+    }),
+    coolRadius: (point, radius, dt, rate) => coolFireSphere({ origin: point, radius, dt, rate }),
+```
+
+- [ ] **Step 4: Run tests, then smoke-test solo play**
+
+Run:
+```bash
+node --check main.js && node --test tests/net-main-wiring.test.js tests/v16-dynamic-events-integration.test.js tests/dynamic-event-system.test.js tests/ice-breath.test.js
+```
+Expected: PASS (same single CRLF-only exception as Task 10).
+
+Smoke test in the browser (solo): at `http://localhost:8080/?debug` force an event with
+`window.__sky.dynamicEventSystem.spawn('meteor')` and `window.__sky.dynamicEventSystem.spawn('buildingFire')`, then watch the warning, the fall, the fires, and put the fires out with `G` (ice breath). Everything must behave as before; no console errors.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add main.js tests/net-main-wiring.test.js
+git commit -m "feat(net): mirror meteors and fires to guests; forward cooling and interception"
+```
+
+---
+
+### Task 12: Ciclo da sessão, heróis remotos e morte online (`main.js`)
+
+**Files:**
+- Modify: `main.js`, `index.html` (nenhuma mudança além da Task 7)
+- Test: `tests/net-main-wiring.test.js` (acrescenta testes)
+
+**Interfaces:**
+- Consumes: tudo das Tasks 1–11; `Room`, `NetSession`, `createPeerNetwork`, `RemoteHeroes`, `createOnlinePanel`, `describeNetError`, `cleanPlayerName`.
+- Produces:
+  - Seção `// V21 ONLINE CO-OP — session lifecycle` em `main.js` com `startOnline(role, code?)`, `beginOnlineSession(room)`, `leaveOnline()`, `endOnlineSession(message)`, `createNetGame()`, `sendWorldBootstrap(id)`, `netTick()`, `netLocalPose()`
+  - `resetGame({ scope = 'all', fromNet = false } = {})`: `scope: 'player'` só renasce o herói local
+  - Aba **Online** no menu, pontos dos jogadores no minimapa, `window.__sky.netSession` no modo debug
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/net-main-wiring.test.js`:
+
+```js
+const section = main.slice(main.indexOf('V21 ONLINE CO-OP — session lifecycle'));
+
+test('online: the session section creates rooms, wires every NetSession callback and ends cleanly', () => {
+  assert.ok(main.includes('V21 ONLINE CO-OP — session lifecycle'));
+  assert.match(main, /import \{ Room \} from '\.\/game\/net\/room\.js';/);
+  assert.match(main, /import \{ createPeerNetwork \} from '\.\/game\/net\/transport\.js';/);
+  const game = fn('createNetGame');
+  for (const key of ['getLocalPose', 'getBossState', 'getFireSnapshot', 'applyRemoteDamage', 'applyCool', 'applyIntercept',
+    'applyBossState', 'applyFireSnapshot', 'handleWorldEvent', 'applyHit', 'resetMission', 'onPlayers', 'onPlayerJoined', 'onClosed']) {
+    assert.match(game, new RegExp(`\\b${key}\\b`), key);
+  }
+  assert.match(game, /resetMission: \(\) => resetGame\(\{ fromNet: true \}\)/);
+  assert.match(fn('beginOnlineSession'), /dynamicEventSystem\.setMirror\(netSession\.isGuest\)/);
+  assert.match(fn('endOnlineSession'), /dynamicEventSystem\.setMirror\(false\)/);
+  assert.match(fn('endOnlineSession'), /remoteHeroes\.clear\(\)/);
+  assert.match(fn('startOnline'), /describeNetError\(err\?\.code\)/);
+  assert.match(fn('sendWorldBootstrap'), /sendEventTo\(id, 'fires'/);
+  assert.match(fn('netLocalPose'), /clampWorld/);
+});
+
+test('online: the frame loop keeps the net alive while paused and never runs the boss AI on guests', () => {
+  const animate = fn('animate');
+  assert.match(animate, /if \(paused\) \{\s*if \(netSession\) netTick\(\);/);
+  assert.match(animate, /if \(netSession\?\.isGuest\) \{ \/\* mirrored in netTick \*\/ \} else updateEnemy\(/);
+  assert.match(animate, /netTick\(\)/);
+  assert.match(fn('netTick'), /updateBossMirror\(dt\)/);
+  assert.match(fn('buildMapState'), /peers: remoteHeroes\.positions\(\)/);
+});
+
+test('online: dying only respawns you; only the host restarts the whole mission', () => {
+  const reset = fn('resetGame');
+  assert.match(reset, /function resetGame\(\{ scope = 'all', fromNet = false \} = \{\}\)/);
+  assert.match(reset, /if \(netSession\?\.isGuest && !fromNet\) scope = 'player';/);
+  assert.match(reset, /if \(all && netSession\?\.isHost && !fromNet\) netSession\?\.broadcastReset\(\);/);
+  assert.match(fn('damagePlayer'), /everyoneDown/);
+  assert.match(fn('damagePlayer'), /resetGame\(netSession && !everyoneDown \? \{ scope: 'player' \} : \{\}\)/);
+  assert.match(fn('selectCharacter'), /resetGame\(netSession \? \{ scope: 'player' \} : \{\}\)/);
+});
+
+test('solo safety: before the online section netSession is only used with ?., and leaving restores solo', () => {
+  const solo = main.slice(0, main.indexOf('V21 ONLINE CO-OP — session lifecycle'));
+  assert.doesNotMatch(solo, /\bnetSession\.[a-zA-Z]/);
+  assert.match(fn('endOnlineSession'), /netSession = null/);
+  assert.match(main, /addEventListener\('pagehide', \(\) => netSession\?\.leave\(\)\)/);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test tests/net-main-wiring.test.js`
+Expected: FAIL — marker `V21 ONLINE CO-OP — session lifecycle` not found.
+
+- [ ] **Step 3: Write minimal implementation**
+
+All edits are in `main.js`.
+
+**3a. Imports.** After the two net imports added in Task 10, add:
+```js
+import { Room } from './game/net/room.js';
+import { NetSession } from './game/net/net-session.js';
+import { createPeerNetwork } from './game/net/transport.js';
+import { RemoteHeroes } from './game/net/remote-hero.js';
+import { createOnlinePanel, describeNetError, cleanPlayerName } from './game/ui/online-panel.js';
+```
+
+**3b. `resetGame`.** Replace the declaration line `function resetGame() {` with
+```js
+function resetGame({ scope = 'all', fromNet = false } = {}) {
+  // A guest never restarts the shared world: pressing R (or dying) only respawns the guest.
+  if (netSession?.isGuest && !fromNet) scope = 'player';
+  const all = scope === 'all';
+```
+Then wrap the world-only statements. Replace
+```js
+  dynamicEventSystem.reset();
+  fireSystem.reset();
+  emergencyPresentation.reset();
+  recentBuildingFireIds.clear();
+```
+with
+```js
+  if (all) {
+    dynamicEventSystem.reset();
+    fireSystem.reset();
+    emergencyPresentation.reset();
+    recentBuildingFireIds.clear();
+  }
+```
+Replace `velocity.set(0,0,0); score=0;` with `velocity.set(0,0,0); if (all) score = 0;`. Replace
+```js
+  applyEnemyLevel(1);
+  resetEnemy();
+  updateCombatHUD();
+```
+with
+```js
+  if (all) {
+    applyEnemyLevel(1);
+    resetEnemy();
+  }
+  updateCombatHUD();
+```
+Replace the last three statements of the function
+```js
+  for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(ring.userData.baseScale ?? 1); }
+  document.querySelector('#score').textContent = 0;
+  showMessage('Missão reiniciada', 850);
+}
+```
+with
+```js
+  if (all) {
+    for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(ring.userData.baseScale ?? 1); }
+    document.querySelector('#score').textContent = 0;
+  }
+  showMessage(all ? 'Missão reiniciada' : 'RENASCEU', 850);
+  if (all && netSession?.isHost && !fromNet) netSession?.broadcastReset();
+}
+```
+
+**3c. Death and character switch.** In `damagePlayer`, replace
+```js
+    setTimeout(() => {
+      if (playerDead && serial === enemyRespawnSerial) resetGame();
+    }, 1700);
+```
+with
+```js
+    setTimeout(() => {
+      if (!playerDead || serial !== enemyRespawnSerial) return;
+      // Online: only restart the shared mission when every player is down (host decides).
+      const everyoneDown = !!netSession?.isHost && !!netSession?.remoteLatest().every(r => r.dead);
+      resetGame(netSession && !everyoneDown ? { scope: 'player' } : {});
+    }, 1700);
+```
+In `selectCharacter`, replace its `resetGame();` call with `resetGame(netSession ? { scope: 'player' } : {});`.
+
+**3d. Boss AI and the net frame.** In `animate`, replace `updateEnemy(worldDt * chillScale,time);` with
+```js
+  if (netSession?.isGuest) { /* mirrored in netTick */ } else updateEnemy(worldDt * chillScale,time);
+```
+At the very start of the `if (paused) {` block of `animate` add `if (netSession) netTick();` as its first statement. Immediately before the line `// Never step backwards: a negative delta would destabilise every damped lerp.` add `if (netSession) netTick();`.
+
+**3e. Minimap and status.** In `buildMapState`, add `peers: remoteHeroes.positions(),` to the returned object (after `meteors`). In the `getStatus` list of `createPauseMenu`, add before `['Modo offline', …]`:
+```js
+    ...(netSession ? [['Sala online', `${netSession.code} · ${netSession.playerCount} jogador(es)`]] : []),
+```
+Pass the panel to the menu: add `onlinePanel,` to the `createPauseMenu({ … })` options (next to `getSkinIds`). In the debug handle `window.__sky = { … }` add `get netSession() { return netSession; },`.
+
+**3f. The session section.** Insert this block immediately **before** the line `// --- pause ---` (so `onlinePanel` exists when `createPauseMenu` runs):
+```js
+// ---------------------------------------------------------------------------
+// V21 ONLINE CO-OP — session lifecycle
+// ---------------------------------------------------------------------------
+const NAME_KEY = 'sky-guardian:player-name';
+const modelCache = new Map();
+let netStatus = 'idle';            // 'idle' | 'busy' | 'connected'
+let netError = '';
+let netNetwork = null;
+let lastNetFrame = 0;
+
+function loadRemoteGltf(url) {
+  if (!modelCache.has(url)) {
+    modelCache.set(url, new Promise((resolve, reject) => {
+      gltfLoader.load(url, gltf => { prepScene(gltf.scene, { shadows: true }); resolve(gltf); }, undefined, reject);
+    }).catch(err => { modelCache.delete(url); throw err; }));
+  }
+  return modelCache.get(url);
+}
+const remoteHeroes = new RemoteHeroes({ scene, loadGltf: loadRemoteGltf });
+
+function playerName() {
+  try { return cleanPlayerName(settingsStore?.getItem(NAME_KEY)) || 'Herói'; } catch { return 'Herói'; }
+}
+function savePlayerName(name) {
+  try { settingsStore?.setItem(NAME_KEY, name); } catch { /* optional */ }
+}
+const localProfile = () => ({ name: playerName(), char: activeCharacterId, skin: skinIds[activeCharacterId] });
+
+// The protocol caps coordinates at +-5000; space flight goes far beyond the city.
+const clampWorld = v => Math.max(-4900, Math.min(4900, v));
+function netLocalPose() {
+  const q = hero.quaternion;
+  return {
+    char: activeCharacterId, skin: skinIds[activeCharacterId],
+    p: [clampWorld(hero.position.x), clampWorld(hero.position.y), clampWorld(hero.position.z)], q: [q.x, q.y, q.z, q.w],
+    clip: flashActive() ? (flash.currentName || '') : (currentAnimName || ''),
+    hp: Math.max(0, playerHealth), dead: playerDead
+  };
+}
+
+// A guest that joins mid-game gets the fires and the running events right away.
+function sendWorldBootstrap(id) {
+  if (!netSession?.isHost) return;
+  const spots = fireSystem.getActiveSpots().map(fireDescriptor);
+  for (let i = 0; i < spots.length; i += 4) netSession.sendEventTo(id, 'fires', { descriptors: spots.slice(i, i + 4) });
+  for (const event of dynamicEventSystem.getActiveEvents()) {
+    if (['intercepted', 'resolved'].includes(event.state)) continue;
+    netSession.sendEventTo(id, event.type === 'meteor' ? 'spawn-meteor' : 'spawn-fire', describeEvent(event));
+  }
+}
+
+function createNetGame() {
+  return {
+    getLocalPose: netLocalPose,
+    getBossState: bossStateForNet,
+    getFireSnapshot: () => fireSystem.getSnapshot(),
+    applyRemoteDamage,
+    applyCool: applyCoolRequest,
+    applyIntercept: applyInterceptRequest,
+    applyBossState: applyBossMirror,
+    applyFireSnapshot: list => fireSystem.syncFromSnapshot(list),
+    handleWorldEvent: adoptWorldEvent,
+    applyHit: ({ amount, dir }) => damagePlayer(amount, new THREE.Vector3(dir[0], dir[1], dir[2])),
+    resetMission: () => resetGame({ fromNet: true }),
+    onPlayers: () => { rescaleBossForPlayers(); onlinePanel.sync(); pauseMenu.refresh(); },
+    onPlayerJoined: id => { sendWorldBootstrap(id); showMessage('JOGADOR ENTROU NA SALA', 1200); },
+    onClosed: reason => endOnlineSession(describeNetError(reason))
+  };
+}
+
+async function startOnline(role, code = '') {
+  if (netStatus !== 'idle') return;
+  netStatus = 'busy';
+  netError = '';
+  onlinePanel.sync();
+  try {
+    netNetwork ||= createPeerNetwork();
+    const options = { network: netNetwork, player: localProfile() };
+    const room = role === 'host' ? await Room.host(options) : await Room.join({ ...options, code });
+    beginOnlineSession(room);
+  } catch (err) {
+    console.warn('[net]', err);
+    netStatus = 'idle';
+    netError = describeNetError(err?.code);
+  }
+  onlinePanel.sync();
+  pauseMenu.refresh();
+}
+
+function beginOnlineSession(room) {
+  netSession = new NetSession({ room, game: createNetGame() });
+  netStatus = 'connected';
+  dynamicEventSystem.setMirror(netSession.isGuest);
+  if (netSession.isGuest) {
+    // The guest's own city state is replaced by the host's: start from a clean mirror.
+    bossMirror.clear();
+    mirroredBoss = null;
+    resetGame({ fromNet: true });
+  } else {
+    rescaleBossForPlayers();
+  }
+  showMessage(netSession.isHost ? `SALA ${room.code} CRIADA` : `NA SALA ${room.code}`, 1800);
+}
+
+function leaveOnline() { endOnlineSession(''); }
+
+function endOnlineSession(message = '') {
+  const wasGuest = !!netSession?.isGuest;
+  if (netSession?.active) netSession.leave();
+  netSession = null;
+  netStatus = 'idle';
+  netError = message;
+  dynamicEventSystem.setMirror(false);
+  remoteHeroes.clear();
+  bossMirror.clear();
+  mirroredBoss = null;
+  rescaleBossForPlayers();                       // back to the solo health scale
+  if (wasGuest) resetGame();                     // the guest world was a mirror: start a clean solo mission
+  if (message) showMessage(message, 2400);
+  onlinePanel.sync();
+  pauseMenu.refresh();
+}
+
+function netTick() {
+  const now = performance.now();
+  const dt = lastNetFrame ? Math.min(.05, (now - lastNetFrame) / 1000) : 0;
+  lastNetFrame = now;
+  netSession.update(now);
+  if (!netSession?.active) return;               // update() may have closed the room
+  remoteHeroes.update(dt, netSession.remotes(now));
+  if (netSession.isGuest) updateBossMirror(dt);
+}
+
+addEventListener('pagehide', () => netSession?.leave());
+
+const onlinePanel = createOnlinePanel({
+  getState: () => ({
+    status: netStatus, code: netSession?.code || '', isHost: !!netSession?.isHost, error: netError,
+    players: (netSession?.players || []).map(p => ({ ...p, self: p.id === netSession.selfId, isHost: p.id === 'p0' }))
+  }),
+  getName: playerName,
+  setName: savePlayerName,
+  onCreate: () => startOnline('host'),
+  onJoin: code => startOnline('guest', code),
+  onLeave: leaveOnline
+});
+
+```
+
+- [ ] **Step 4: Run tests, then verify with two tabs**
+
+Run:
+```bash
+node --check main.js && npm test
+```
+Expected: PASS for everything except the single Windows-CRLF `scheduler` test described in Task 10 (fixed in Task 13).
+
+Two-tab verification (WebRTC works between tabs of the same machine; keep both tabs visible, because a hidden tab throttles `requestAnimationFrame`). Start the preview server (`preview_start`, configuration `sky-guardian`) and open `http://localhost:8080/?debug` in **two** tabs (tab A and tab B). In each, click **JOGAR**, press `P`, open **Online**.
+
+1. Tab A: type a name, click **Criar sala**. A 4-character code appears and the player list shows one player (you, anfitrião). If instead the message says the network cannot connect, check the console for the PeerJS error and confirm `window.Peer` exists.
+2. Tab B: type the code (lower case and with spaces must work) and click **Entrar**. Both tabs list two players. Typing a wrong code shows "Sala não encontrada". Typing `abc` shows the invalid-code message.
+3. Close the menu in both (`Esc`). In A you see B's hero (placeholder pillar, then the model) with a name tag; moving B moves it in A, and the other way round. Both tabs show the other player as a green dot on the minimap.
+4. Jason is in the same place in both tabs and walks/attacks in sync. In tab B punch Jason (`E`): his bar drops in **both** tabs, and the damage number appears in B immediately.
+5. In tab A run `window.__sky.dynamicEventSystem.spawn('meteor')`: tab B shows the same alert and the same falling meteor; after impact the same fires appear in both. Put them out with `G` in B: they disappear in both.
+6. Make Jason hit B (stand next to him): B's health drops; A's does not. Let B die: B respawns by itself after about 2 s; Jason and the fires do not reset.
+7. In tab A run `window.__sky.netSession.leave()` (or click **Sair da sala**): tab B shows "O anfitrião saiu: a sala foi encerrada." and returns to a normal solo game.
+8. Re-create a room in A, let a meteor impact, then join from B: B must see the active fires and the boss at the current health.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add main.js tests/net-main-wiring.test.js
+git commit -m "feat(net): online sessions, remote heroes, online respawn and Online tab wiring"
+```
+
+---
+
+### Task 13: Publicação no GitHub Pages, documentação e verificação final
+
+**Files:**
+- Create: `tools/build-site.mjs`, `.github/workflows/pages.yml`
+- Modify: `package.json`, `README.md`, `ATTRIBUTION.md`, `tests/v16-dynamic-events-integration.test.js`, `docs/superpowers/specs/2026-10-13-online-coop-design.md`
+- Test: `tests/build-site.test.js`
+
+**Interfaces:**
+- Consumes: `pwa-manifest.json` (gerado por `npm run pwa`).
+- Produces: `buildSite(outDir) -> { files: number }` exportado por `tools/build-site.mjs`; script `npm run site`; workflow que testa, regenera o PWA, monta `_site/` e publica.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/build-site.test.js`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { buildSite } from '../tools/build-site.mjs';
+
+test('the Pages artifact has everything the game needs and nothing it does not', async () => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sky-site-'));
+  try {
+    const { files } = await buildSite(out);
+    assert.ok(files > 50);
+    for (const rel of ['index.html', 'main.js', 'sw.js', 'pwa-manifest.json', 'manifest.webmanifest', 'vendor/peerjs/peerjs.min.js',
+      'vendor/three/build/three.module.js', 'game/net/room.js', 'assets/flash/reverse-flash.glb', 'assets/superman/Superman-armor.glb']) {
+      assert.ok(fs.existsSync(path.join(out, rel)), rel);
+    }
+    for (const rel of ['tests', 'tools', 'docs', 'node_modules', 'graphify-out', 'main.js.bak', 'sky_guardian_threejs.zip']) {
+      assert.ok(!fs.existsSync(path.join(out, rel)), `${rel} must not be published`);
+    }
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('the workflow tests, rebuilds the PWA manifest and publishes the generated site', () => {
+  const yml = fs.readFileSync(new URL('../.github/workflows/pages.yml', import.meta.url), 'utf8');
+  for (const needle of ['npm test', 'npm run pwa', 'npm run site', 'actions/upload-pages-artifact', 'actions/deploy-pages', 'pages: write', 'id-token: write']) {
+    assert.ok(yml.includes(needle), needle);
+  }
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test tests/build-site.test.js`
+Expected: FAIL — module `tools/build-site.mjs` not found.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `tools/build-site.mjs`:
+
+```js
+#!/usr/bin/env node
+// Assembles the static site for GitHub Pages in ./_site, from the same file list the
+// service worker precaches (pwa-manifest.json) plus the worker itself. Run `npm run pwa`
+// first so the list is current.
+//   node tools/build-site.mjs [outDir]
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const EXTRA = ['sw.js', 'pwa-manifest.json'];
+
+export async function buildSite(outDir = path.join(ROOT, '_site')) {
+  const manifest = JSON.parse(await fs.readFile(path.join(ROOT, 'pwa-manifest.json'), 'utf8'));
+  const wanted = new Set([...manifest.core, ...manifest.assets.map(a => a.url), ...EXTRA.map(f => `./${f}`)]);
+  wanted.delete('./');
+  await fs.rm(outDir, { recursive: true, force: true });
+  let files = 0;
+  for (const url of wanted) {
+    const rel = url.replace(/^\.\//, '');
+    const target = path.join(outDir, rel);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.copyFile(path.join(ROOT, rel), target);
+    files++;
+  }
+  return { files };
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { files } = await buildSite(process.argv[2] ? path.resolve(process.argv[2]) : undefined);
+  console.log(`site: ${files} files`);
+}
+```
+
+In `package.json` add the script `"site": "node tools/build-site.mjs",` and append `&& node --check tools/build-site.mjs` to `"check"`.
+
+Create `.github/workflows/pages.yml`:
+
+```yaml
+name: Publicar no GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Testes
+        run: npm test
+      - name: Atualizar o manifesto do PWA
+        run: npm run pwa
+      - name: Montar o site
+        run: npm run site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+```
+
+Make the one Windows-only test tolerant of CRLF: in `tests/v16-dynamic-events-integration.test.js` change `;\n\}/)?.[0]` in the `animate` regex of the test `scheduler é atualizado uma vez por frame…` to `;\r?\n\}/)?.[0]`.
+
+Add `_site/` to `.gitignore` (create the file if it does not exist, with the single line `_site/`).
+
+Documentation:
+- `README.md`: add a section **Co-op online** after the Skins section: how to create and join a room (Pausa → Online), up to 4 players, the host runs Jason and the events, limits (host leaving ends the room, STUN only so some networks do not connect, the host pausing freezes the shared world, effects of other heroes are not mirrored, the boss telegraph is not shown to guests), how the site is published (`.github/workflows/pages.yml`, enable **Settings → Pages → Source: GitHub Actions**; the repository must be public on the free plan), and `npm run vendor:peerjs`, `npm run site`.
+- `ATTRIBUTION.md`: add a **PeerJS** entry (MIT, https://peerjs.com, vendored at `vendor/peerjs/`, version in `vendor/peerjs/VERSION`).
+- `docs/superpowers/specs/2026-10-13-online-coop-design.md`: add a final section `## 12. Mudanças feitas ao planejar` listing the five items under "Deviations from the spec" at the top of `docs/superpowers/plans/2026-10-13-online-coop.md`.
+
+- [ ] **Step 4: Run the whole suite and the final manual checks**
+
+Run:
+```bash
+npm run pwa && npm run check && npm test && npm run site
+```
+Expected: all tests PASS (including the former CRLF failure), `site: N files`.
+
+Serve the built site from a **sub-path** to prove the relative paths work the way GitHub Pages serves it (`https://user.github.io/repo/`):
+```bash
+node -e "const fs=require('fs');fs.rmSync('_pages-check',{recursive:true,force:true});fs.mkdirSync('_pages-check');fs.cpSync('_site','_pages-check/repo',{recursive:true})"
+python -m http.server 8090 --directory _pages-check
+```
+Open `http://localhost:8090/repo/` in the browser: the game must load (city, Superman, Jason), the Online tab must be present, and the console must show no 404s. Then delete `_pages-check`.
+
+After pushing to `main` with Pages enabled, repeat the two-player test of Task 12 using two devices on different networks (or one device on mobile data) to find out which networks cannot connect with STUN only.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/build-site.mjs .github/workflows/pages.yml package.json .gitignore README.md ATTRIBUTION.md docs/superpowers/specs/2026-10-13-online-coop-design.md tests/build-site.test.js tests/v16-dynamic-events-integration.test.js
+git commit -m "feat(net): publish to GitHub Pages and document the online co-op"
 ```
