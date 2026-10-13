@@ -24,6 +24,7 @@ export class DynamicEventSystem {
     this.tuning=cloneTuning(tuning);
     this.events=[];
     this.pauseReasons=new Set();
+    this.mirror=false;
     this._resetClocks();
   }
 
@@ -43,6 +44,13 @@ export class DynamicEventSystem {
   resume(reason){if(reason)this.pauseReasons.delete(String(reason));}
   getActiveEvents(){return [...this.events];}
   getSnapshots(){return this.events.map(e=>e.getSnapshot?.()).filter(Boolean);}
+  // Online guests: the host decides what happens. Mirror mode keeps adopted events
+  // advancing but never rolls new ones.
+  setMirror(on){this.mirror=!!on;}
+  adopt(event){
+    if(event && !this.events.includes(event)) this.events.push(event);
+    return event;
+  }
   countType(type){
     const normalized=type==='buildingFire'?'building-fire':type;
     return this.events.filter(e=>e.type===normalized && e.state!=='resolved').length;
@@ -82,6 +90,8 @@ export class DynamicEventSystem {
       if(Array.isArray(result)) commands.push(...result);
       if(event.state==='resolved') this.events=this.events.filter(e=>e!==event);
     }
+
+    if(this.mirror) return commands;
 
     if(this.calmRemaining>0) {
       this.calmRemaining=Math.max(0,this.calmRemaining-step);
