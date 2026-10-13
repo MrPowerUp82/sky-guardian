@@ -45,3 +45,54 @@ test('solo safety: before the online section, netSession is only ever touched wi
   const solo = marker > 0 ? main.slice(0, marker) : main;
   assert.doesNotMatch(solo, /\bnetSession\.[a-zA-Z]/);
 });
+
+import { encode, decode, NET_TUNING } from '../game/net/protocol.js';
+
+test('events: the host announces spawns and ships fire positions with the impact command', () => {
+  assert.match(main, /meteor: \(\.\.\.args\) => announceSpawn\(createMeteorEvent\(\.\.\.args\)\)/);
+  assert.match(main, /buildingFire: \(\.\.\.args\) => announceSpawn\(createBuildingFireEvent\(\.\.\.args\)\)/);
+  assert.match(fn('handleEventCommand'), /function handleEventCommand\(command, \{ mirrored = false \} = \{\}\)/);
+  assert.match(fn('handleEventCommand'), /mirrored \? \(command\.descriptors \|\| \[\]\) : buildMeteorImpactFireDescriptors/);
+  assert.match(fn('handleEventCommand'), /command\.descriptors = descriptors/);
+  assert.match(fn('emitEventCommand'), /if \(netSession\?\.isGuest\) return;/);
+  assert.match(fn('emitEventCommand'), /broadcastEvent\('command', command\)/);
+  assert.match(fn('updateDynamicEvents'), /emitEventCommand\(command\)/);
+  assert.doesNotMatch(fn('updateDynamicEvents'), /handleEventCommand\(command\)/);
+  assert.match(fn('tryInterceptActiveMeteor'), /emitEventCommand\(\{ \.\.\.command, method \}\)/);
+  assert.match(fn('tryInterceptActiveMeteor'), /netSession\?\.isGuest[\s\S]*sendIntercept\(/);
+});
+
+test('events: a guest rebuilds meteors and building fires from the host descriptors', () => {
+  const adopt = fn('adoptWorldEvent');
+  for (const kind of ['command', 'fires', 'spawn-meteor', 'spawn-fire']) assert.match(adopt, new RegExp(`'${kind}'`));
+  assert.match(adopt, /dynamicEventSystem\.adopt\(event\)/);
+  assert.match(adopt, /handleEventCommand\(data, \{ mirrored: true \}\)/);
+});
+
+test('fire: cooling is applied locally and forwarded; the host applies requests without occlusion', () => {
+  assert.match(fn('coolFireCone'), /fireSystem\.applyCoolingCone\(args\)/);
+  assert.match(fn('coolFireCone'), /netSession\?\.sendCool\(/);
+  assert.match(fn('coolFireSphere'), /fireSystem\.applyCoolingSphere\(args\)/);
+  assert.match(main, /const affected = coolFireCone\(\{/);
+  assert.match(main, /coolCone: \(origin, dir, range, halfAngle, dt, rate\) => coolFireCone\(/);
+  assert.match(main, /coolRadius: \(point, radius, dt, rate\) => coolFireSphere\(/);
+  assert.match(fn('applyCoolRequest'), /applyCoolingCone|applyCoolingSphere/);
+});
+
+test('the host keeps the world ticking for everyone while it is busy; solo keeps its old pauses', () => {
+  const update = fn('updateDynamicEvents');
+  assert.match(update, /const controlLocked = netSession \? \(!heroReady \|\| helpVisible\)/);
+  assert.match(update, /playerDead \|\| actionLocked \|\| flightMachine\.busy \|\| leapAttack\.active \|\| helpVisible/);
+});
+
+test('the protocol can carry the largest event payloads within the message limit', () => {
+  const spot = i => ({ id: `meteor-12:impact-fire:${i}`, eventId: 'meteor-12', source: 'meteor-impact', position: { x: -123.456789, y: 0.08, z: 210.123456 }, normal: { x: 0, y: 1, z: 0 }, radius: 2.35, intensity: 1 });
+  const six = Array.from({ length: 6 }, (_, i) => spot(i + 1));
+  const impact = { t: 'event', kind: 'command', data: { type: 'meteor-impact', eventId: 'meteor-12', point: { x: -123.4, y: 0.08, z: 210.1 }, requestedFireCount: 6, descriptors: six } };
+  assert.ok(encode(impact).length < NET_TUNING.maxMessageChars);
+  assert.deepEqual(decode(encode(impact)).data.descriptors.length, 6);
+  const fires = { t: 'event', kind: 'fires', data: { descriptors: six.slice(0, 4).map(s => ({ ...s, buildingId: 'b-123' })) } };
+  assert.ok(decode(encode(fires)));
+  const meteorSpawn = { t: 'event', kind: 'spawn-meteor', data: { id: 'meteor-12', impactPoint: { x: 1, y: 2, z: 3 }, startPosition: { x: 1, y: 360, z: 3 }, warningSeconds: 1.5, fallSeconds: 12, fireCount: 6, state: 'falling', warningElapsed: 1.5, fallElapsed: 3.25, fireIds: [] } };
+  assert.ok(decode(encode(meteorSpawn)));
+});

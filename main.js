@@ -3047,11 +3047,31 @@ const METEOR_COLLISION_RADIUS = METEOR_RADIUS;
 // Flying through a falling meteor at or above this speed (m/s, ~860 km/h, reached
 // within a second of Shift+W) shatters it; slower and it is a solid obstacle.
 const METEOR_SMASH_SPEED = 240;
+// What the host tells guests about an event: enough to rebuild it (also for late joiners).
+const fireDescriptor = spot => spot && ({
+  id: spot.id, eventId: spot.eventId, buildingId: spot.buildingId, source: spot.source,
+  position: spot.position, normal: spot.normal, radius: spot.radius, intensity: spot.intensity
+});
+function describeEvent(event) {
+  if (event.type === 'meteor') {
+    return {
+      id: event.id, impactPoint: event.impactPoint, startPosition: event.startPosition, warningSeconds: event.warningSeconds,
+      fallSeconds: event.fallSeconds, fireCount: event.fireCount, state: event.state, warningElapsed: event.warningElapsed,
+      fallElapsed: event.fallElapsed, fireIds: [...event.fireIds]
+    };
+  }
+  return { id: event.id, buildingId: event.buildingId, descriptors: event.fireIds.map(id => fireDescriptor(fireSystem.getSpot(id))).filter(Boolean) };
+}
+function announceSpawn(event) {
+  if (event) netSession?.broadcastEvent(event.type === 'meteor' ? 'spawn-meteor' : 'spawn-fire', describeEvent(event));
+  return event;
+}
+
 const dynamicEventSystem = new DynamicEventSystem({
   rng: eventRng,
   factories: {
-    meteor: createMeteorEvent,
-    buildingFire: createBuildingFireEvent
+    meteor: (...args) => announceSpawn(createMeteorEvent(...args)),
+    buildingFire: (...args) => announceSpawn(createBuildingFireEvent(...args))
   }
 });
 
@@ -3264,7 +3284,7 @@ function spawnMeteorShatterFx(position, supersonic) {
   if (supersonic) requestHitStop(.12);
 }
 
-function handleEventCommand(command) {
+function handleEventCommand(command, { mirrored = false } = {}) {
   if (!command) return;
   const event = eventById(command.eventId);
   if (command.type === 'meteor-impact') {
@@ -3279,13 +3299,16 @@ function handleEventCommand(command) {
     cameraShake = Math.max(cameraShake, impactShake);
     pushCityActorsFrom(point, 40, 20);
     const requested = Math.min(Number(command.requestedFireCount) || 3, fireSystem.remainingCapacity());
-    const descriptors = buildMeteorImpactFireDescriptors(command.eventId, point, requested);
+    // The host rolls the fire positions once and ships them with the command; guests use those.
+    const descriptors = mirrored ? (command.descriptors || []) : buildMeteorImpactFireDescriptors(command.eventId, point, requested);
+    command.descriptors = descriptors;
     const fireIds = fireSystem.addSpots(descriptors);
     event?.attachFireIds?.(fireIds);
     showMessage(fireIds.length ? `IMPACTO · APAGUE ${fireIds.length} FOCOS` : 'IMPACTO DO METEORO', 1500);
     return;
   }
   if (command.type === 'meteor-intercepted') {
+    meteorInterceptMethod = command.method || meteorInterceptMethod;
     emergencyPresentation.pulseAirburst(command.position);
     emergencyPresentation.removeMeteor(command.eventId, { exploded:false });
     event?.dispose?.();
@@ -3306,6 +3329,42 @@ function handleEventCommand(command) {
   }
 }
 
+// Host: run the command here, then tell the guests. Guest: commands come only from the host.
+function emitEventCommand(command) {
+  if (netSession?.isGuest) return;
+  handleEventCommand(command);
+  netSession?.broadcastEvent('command', command);
+}
+
+// Guest: rebuild what the host announced.
+function adoptWorldEvent(kind, data) {
+  if (kind === 'command') { handleEventCommand(data, { mirrored: true }); return; }
+  if (kind === 'fires') { fireSystem.addSpots(data.descriptors || []); return; }
+  if (kind === 'spawn-meteor') {
+    const event = new MeteorEvent({
+      id: data.id, impactPoint: data.impactPoint, startPosition: data.startPosition,
+      warningSeconds: data.warningSeconds, fallSeconds: data.fallSeconds, fireCount: data.fireCount
+    });
+    if (data.state) {                                   // late joiner: pick up mid-flight
+      event.state = data.state;
+      event.warningElapsed = data.warningElapsed || 0;
+      event.fallElapsed = data.fallElapsed || 0;
+      event._impactEmitted = data.state === 'impacted';
+    }
+    event.attachFireIds(data.fireIds || []);
+    dynamicEventSystem.adopt(event);
+    if (!data.state || data.state === 'warning') showMessage('ALERTA · METEORO DETECTADO', 1250);
+    return;
+  }
+  if (kind === 'spawn-fire') {
+    fireSystem.addSpots(data.descriptors || []);
+    const event = new BuildingFireEvent({ id: data.id, buildingId: data.buildingId });
+    event.attachFireIds((data.descriptors || []).map(d => d.id));
+    dynamicEventSystem.adopt(event);
+    showMessage('EMERGÊNCIA · INCÊNDIO EM PRÉDIO', 1100);
+  }
+}
+
 let meteorInterceptMethod = 'superPunch';
 function tryInterceptActiveMeteor(method, origin, radius = 0, speed = 0) {
   const meteor = dynamicEventSystem.getActiveEvents().find(event => event.type === 'meteor' && event.state === 'falling');
@@ -3313,9 +3372,14 @@ function tryInterceptActiveMeteor(method, origin, radius = 0, speed = 0) {
   const snapshot = meteor.getSnapshot();
   const meteorPosition = new THREE.Vector3(snapshot.position.x, snapshot.position.y, snapshot.position.z);
   if (origin.distanceTo(meteorPosition) > Math.max(0, radius) + METEOR_COLLISION_RADIUS) return false;
+  if (netSession?.isGuest) {                    // the host decides; its commands come back as events
+    if (method === 'supersonic' && speed < METEOR_SMASH_SPEED) return false;
+    netSession?.sendIntercept({ method, origin: [origin.x, origin.y, origin.z], radius, speed });
+    return true;
+  }
   const commands = meteor.tryIntercept({ method, speed, machOne:METEOR_SMASH_SPEED });
   meteorInterceptMethod = method;
-  for (const command of commands) handleEventCommand(command);
+  for (const command of commands) emitEventCommand({ ...command, method });
   return commands.length > 0;
 }
 
@@ -3333,6 +3397,10 @@ function trySupersonicMeteorSweep(previousPosition, currentPosition, speed) {
   // At this speed the hero drags a shock cone, so a near miss is enough to
   // shatter the rock (it is 6 m wide, plus 4 m of shock around the hero).
   return tryInterceptActiveMeteor('supersonic', closest, 4, speed);
+}
+
+function applyInterceptRequest(msg) {
+  tryInterceptActiveMeteor(msg.method, new THREE.Vector3(msg.origin[0], msg.origin[1], msg.origin[2]), msg.radius, msg.speed);
 }
 
 function iceBreathSlotName(kind, variant) {
@@ -3445,6 +3513,33 @@ function iceBreathOccluded(origin, spot) {
   return false;
 }
 
+// Cooling is applied locally everywhere (instant feedback). A guest also asks the host to
+// apply the same cooling to the authoritative fire, so the fire goes out for everyone.
+function coolFireCone(args) {
+  const affected = fireSystem.applyCoolingCone(args);
+  netSession?.sendCool({
+    shape: 'cone', origin: [args.origin.x, args.origin.y, args.origin.z], dir: [args.direction.x, args.direction.y, args.direction.z],
+    range: args.range, half: args.halfAngleDeg, dt: args.dt, rate: args.rate, radius: 0
+  });
+  return affected;
+}
+function coolFireSphere(args) {
+  const affected = fireSystem.applyCoolingSphere(args);
+  netSession?.sendCool({
+    shape: 'sphere', origin: [args.origin.x, args.origin.y, args.origin.z], dir: [0, 0, 1],
+    range: 0, half: 0, dt: args.dt, rate: args.rate, radius: args.radius
+  });
+  return affected;
+}
+function applyCoolRequest(msg) {
+  const origin = { x: msg.origin[0], y: msg.origin[1], z: msg.origin[2] };
+  if (msg.shape === 'sphere') { fireSystem.applyCoolingSphere({ origin, radius: msg.radius, dt: msg.dt, rate: msg.rate }); return; }
+  fireSystem.applyCoolingCone({
+    origin, direction: { x: msg.dir[0], y: msg.dir[1], z: msg.dir[2] },
+    range: msg.range, halfAngleDeg: msg.half, dt: msg.dt, rate: msg.rate
+  });
+}
+
 function updateIceBreath(dt) {
   if (!iceBreathController.active) {
     emergencyPresentation.setIceBreath({active:false});
@@ -3464,7 +3559,7 @@ function updateIceBreath(dt) {
 
   const origin = getIceBreathOrigin();
   const direction = getAimDirection(new THREE.Vector3());
-  const affected = fireSystem.applyCoolingCone({
+  const affected = coolFireCone({
     origin,
     direction,
     range: ICE_BREATH_TUNING.range,
@@ -3509,7 +3604,9 @@ function syncEmergencyPresentation(dt = 0) {
 
 function updateDynamicEvents(dt, time) {
   const helpVisible = !document.querySelector('#help')?.classList.contains('hidden');
-  const controlLocked = !heroReady || playerDead || actionLocked || flightMachine.busy || leapAttack.active || helpVisible;
+  // Online, the shared world must not stop because one player is busy punching or dead.
+  const controlLocked = netSession ? (!heroReady || helpVisible)
+    : (!heroReady || playerDead || actionLocked || flightMachine.busy || leapAttack.active || helpVisible);
   const pauses = [
     ['space', spaceState.active],
     ['reentry', reentryState.active],
@@ -3537,7 +3634,7 @@ function updateDynamicEvents(dt, time) {
     activeFireSpots: fireSystem.getActiveSpots().length,
     remainingFires: eventId => fireSystem.countByEvent(eventId)
   });
-  for (const command of commands) handleEventCommand(command);
+  for (const command of commands) emitEventCommand(command);
   syncEmergencyPresentation(dt);
 }
 
@@ -5194,10 +5291,10 @@ function createFlashApi() {
       return position ? tryInterceptActiveMeteor('superPunch', position, 0, 0) : false;
     },
     pushActors: (point, radius, strength) => pushCityActorsFrom(point, radius, strength),
-    coolCone: (origin, dir, range, halfAngle, dt, rate) => fireSystem.applyCoolingCone({
+    coolCone: (origin, dir, range, halfAngle, dt, rate) => coolFireCone({
       origin, direction: dir, range, halfAngleDeg: halfAngle, dt, rate, occluded: spot => iceBreathOccluded(origin, spot)
     }),
-    coolRadius: (point, radius, dt, rate) => fireSystem.applyCoolingSphere({ origin: point, radius, dt, rate }),
+    coolRadius: (point, radius, dt, rate) => coolFireSphere({ origin: point, radius, dt, rate }),
     isDead: () => playerDead,
     setInvuln: seconds => { playerInvuln = Math.max(playerInvuln, seconds); },
     dodge,
