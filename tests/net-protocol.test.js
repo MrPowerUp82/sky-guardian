@@ -13,7 +13,7 @@ const samples = {
   join: { t: 'join', player: { id: 'p2', ...profile } },
   leave: { t: 'leave', id: 'p2' },
   pose: { t: 'pose', id: 'p1', char: 'flash', skin: 'classic', p: [1, 2, 3], q: [0, 0, 0, 1], clip: 'run', hp: 80, dead: false },
-  world: { t: 'world', boss, fires: [['building-fire-1:fire:1', .5], ['meteor-2:impact-fire:1', 1]] },
+  world: { t: 'world', boss, fires: [['building-fire-1:fire:1', .5], ['meteor-2:impact-fire:1', 1]], meteors: [{ id: 'meteor-3', st: 'falling', w: 1.5, f: 3.25 }] },
   event: { t: 'event', kind: 'spawn-meteor', data: { id: 'meteor-1', impactPoint: { x: 1, y: 2, z: 3 }, fireCount: 4 } },
   dmg: { t: 'dmg', amount: 22, label: 'SOCO', kb: 1.25, src: [0, 1, 0] },
   cool: { t: 'cool', shape: 'cone', origin: [0, 1, 0], dir: [0, 0, 1], range: 24, half: 22, dt: .1, rate: .42, radius: 0 },
@@ -80,4 +80,12 @@ test('values are clamped, names cleaned, prototype keys dropped', () => {
   assert.equal(ev.data.x, undefined);
   const pose = decode(JSON.stringify({ ...samples.pose, q: [0, 0, 0, 2] }));
   assert.ok(Math.abs(Math.hypot(...pose.q) - 1) < 1e-9);
+});
+
+test('world snapshots carry the meteor clock; older or malformed meteor lists are handled', () => {
+  const { meteors, ...withoutMeteors } = samples.world;
+  assert.deepEqual(decode(JSON.stringify(withoutMeteors)).meteors, []);
+  assert.equal(decode(JSON.stringify({ ...samples.world, meteors: [{ id: 'm', st: 'exploded', w: 0, f: 0 }] })), null);
+  assert.equal(decode(JSON.stringify({ ...samples.world, meteors: Array(9).fill(meteors[0]) })), null);
+  assert.equal(decode(JSON.stringify({ ...samples.world, meteors: [{ ...meteors[0], f: 1e9 }] })).meteors[0].f, 120);
 });

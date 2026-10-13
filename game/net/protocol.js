@@ -22,6 +22,7 @@ export const NET_TUNING = Object.freeze({
   maxNameLength: 16,
   maxMessageChars: 4096,
   maxMessagesPerSecond: 120,
+  closeGraceMs: 250,             // keep a link open this long after the last message (PeerJS drops unsent data on close)
   worldLimit: 5000
 });
 
@@ -106,7 +107,9 @@ const SANITIZERS = {
   }),
   world: m => ({
     t: 'world', boss: bossState(m.boss ?? bad()),
-    fires: arr(m.fires, 16, f => (Array.isArray(f) && f.length === 2 ? [str(f[0], 64), clampNum(f[1], 0, 1)] : bad()))
+    fires: arr(m.fires, 16, f => (Array.isArray(f) && f.length === 2 ? [str(f[0], 64), clampNum(f[1], 0, 1)] : bad())),
+    // The meteor clock: guests snap their copy to it, so a paused or slow guest does not drift.
+    meteors: arr(m.meteors ?? [], 4, x => ({ id: str(x.id, 32), st: oneOf(x.st, ['warning', 'falling']), w: clampNum(x.w, 0, 60), f: clampNum(x.f, 0, 120) }))
   }),
   event: m => ({ t: 'event', kind: oneOf(m.kind, EVENT_KINDS), data: plain(m.data) }),
   dmg: m => ({

@@ -28,6 +28,14 @@ export function validateJoinInput(text) {
     : { ok: false, code: '', error: `Código inválido: são ${NET_TUNING.roomCodeLength} letras ou números (sem I, L, O, 0 e 1).` };
 }
 
+/** What the tab actually shows. sync() runs on a timer, so it only rebuilds the DOM when this changes. */
+export function stateSignature(state, localError = '') {
+  return JSON.stringify([
+    state.status, state.code, state.isHost, state.error, localError,
+    (state.players || []).map(p => [p.id, p.name, p.char, p.skin, !!p.self, !!p.isHost])
+  ]);
+}
+
 export function describePlayer(player) {
   return `${player.name} · ${getCharacter(player.char).name} (${getSkin(player.char, player.skin).name})`;
 }
@@ -54,6 +62,7 @@ export function createOnlinePanel({ getState, getName, setName, onCreate, onJoin
     h('div', { class: 'pm-online-name' }, [h('label', { text: 'Seu nome' }), nameInput]), body, message
   ]);
   let localError = '';
+  let lastSignature = '';
 
   function join() {
     const result = validateJoinInput(codeInput.value);
@@ -68,6 +77,10 @@ export function createOnlinePanel({ getState, getName, setName, onCreate, onJoin
     const connected = state.status === 'connected';
     const busy = state.status === 'busy';
     nameInput.disabled = connected || busy;
+    // Rebuilding on every tick would move the focused input and swallow clicks.
+    const signature = stateSignature(state, localError);
+    if (signature === lastSignature) return;
+    lastSignature = signature;
     if (connected) {
       const copy = h('button', { type: 'button', class: 'pm-secondary', text: 'Copiar código' });
       copy.addEventListener('click', () => { navigator.clipboard?.writeText(state.code).catch(() => {}); copy.textContent = 'Copiado!'; });

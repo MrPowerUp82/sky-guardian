@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Room, RoomError } from '../game/net/room.js';
 import { MemoryNetwork } from '../game/net/transport.js';
-import { encode, decode, NET_TUNING, PROTOCOL_VERSION } from '../game/net/protocol.js';
+import { encode, decode, NET_TUNING, PROTOCOL_VERSION, NET_BUILD } from '../game/net/protocol.js';
 
 const flush = async () => { for (let i = 0; i < 4; i++) await new Promise(r => setTimeout(r, 0)); };
 const clock = () => { const c = { t: 0, now: () => c.t }; return c; };
@@ -157,6 +157,43 @@ test('a guest flooding the host is throttled to the per-second budget, and the b
   for (let i = 0; i < 5; i++) g1.send({ t: 'dmg', amount: 1, label: '', kb: 0, src: [0, 0, 0] });
   await flush();
   assert.equal(got, NET_TUNING.maxMessagesPerSecond + 5);
+});
+
+test('a refusal leaves the connection open long enough for the reject to arrive', async () => {
+  const net = new MemoryNetwork();
+  const tuning = { ...NET_TUNING, closeGraceMs: 200, maxPlayers: 1 };
+  const host = await Room.host({ network: net, player: who('Host'), rand: () => .3, tuning });
+  const raw = await net.join(host.code);
+  const replies = [];
+  let rawClosed = false;
+  raw.onMessage(t => replies.push(decode(t).reason));
+  raw.onClose(() => { rawClosed = true; });
+  raw.send(encode({ t: 'hello', proto: PROTOCOL_VERSION, build: NET_BUILD, ...who('Late') }));
+  await flush();
+  assert.deepEqual(replies, ['full']);
+  assert.equal(rawClosed, false, 'still open right after the reject was sent');
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(rawClosed, true);
+});
+
+test('a host shutdown leaves the connections open long enough for the leave message to arrive', async () => {
+  const net = new MemoryNetwork();
+  const tuning = { ...NET_TUNING, closeGraceMs: 200 };
+  const host = await Room.host({ network: net, player: who('Host'), rand: () => .3, tuning });
+  const raw = await net.join(host.code);
+  const got = [];
+  let rawClosed = false;
+  raw.onMessage(t => got.push(decode(t).t));
+  raw.onClose(() => { rawClosed = true; });
+  raw.send(encode({ t: 'hello', proto: PROTOCOL_VERSION, build: NET_BUILD, ...who('G1') }));
+  await flush();
+  assert.ok(got.includes('welcome'));
+  host.close();
+  await flush();
+  assert.ok(got.includes('leave'), 'the leave message was delivered');
+  assert.equal(rawClosed, false, 'still open right after the leave message was sent');
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(rawClosed, true);
 });
 
 test('a dropped connection closes the guest with "lost"', async () => {

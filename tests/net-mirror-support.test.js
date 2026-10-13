@@ -60,3 +60,46 @@ test('syncFromSnapshot follows the host: extinguishes missing spots, only ever l
   fire.syncFromSnapshot([['ghost', .5]]);                  // unknown ids are ignored, not created
   assert.equal(fire.getSpot('ghost'), null);
 });
+
+test('settle puts out the residual sliver of fire that guests can no longer see', () => {
+  const fire = new FireSystem();
+  fire.addSpots([spot('a', .01), spot('b', .5), spot('c', 1)]);
+  fire.settle();
+  assert.equal(fire.getSpot('a').state, 'extinguished');
+  assert.equal(fire.getSpot('a').intensity, 0);
+  assert.equal(fire.getSpot('b').intensity, .5);
+  assert.equal(fire.countByEvent('e1'), 2, 'only the sliver went out');
+  fire.settle(.6);
+  assert.deepEqual(fire.getActiveSpots().map(s => s.id), ['c']);
+});
+
+test('getMeteorSnapshot lists only meteors still in the air', () => {
+  const sys = new DynamicEventSystem({ factories: {} });
+  const m = meteor();
+  sys.adopt(m);
+  assert.deepEqual(sys.getMeteorSnapshot(), [{ id: 'meteor-1', st: 'warning', w: 0, f: 0 }]);
+  sys.update(1.5, {});
+  assert.deepEqual(sys.getMeteorSnapshot(), [{ id: 'meteor-1', st: 'falling', w: 1, f: 0.5 }]);
+  m.state = 'impacted';
+  assert.deepEqual(sys.getMeteorSnapshot(), []);
+});
+
+test('syncMeteors snaps a guest meteor to the host clock, never undoes an impact, ignores unknown ids', () => {
+  const sys = new DynamicEventSystem({ factories: {} });
+  const m = meteor();
+  sys.adopt(m);
+  sys.syncMeteors([{ id: 'meteor-1', st: 'falling', w: 1, f: 1.5 }]);
+  assert.equal(m.state, 'falling');
+  assert.equal(m.fallElapsed, 1.5);
+  sys.update(0, {});
+  assert.ok(Math.abs(m.position.y - 25) < 1e-6, `y was ${m.position.y}`);   // 1.5/2 of the way down from 100
+  sys.syncMeteors([{ id: 'meteor-1', st: 'warning', w: .4, f: 0 }]);        // guest had run ahead: rewind
+  assert.equal(m.state, 'warning');
+  assert.equal(m.warningElapsed, .4);
+  assert.equal(m.fallElapsed, 0);
+  m.state = 'impacted';
+  sys.syncMeteors([{ id: 'meteor-1', st: 'falling', w: 1, f: 1 }]);
+  assert.equal(m.state, 'impacted');
+  assert.doesNotThrow(() => sys.syncMeteors([{ id: 'ghost', st: 'falling', w: 1, f: 1 }]));
+  assert.doesNotThrow(() => sys.syncMeteors(undefined));
+});

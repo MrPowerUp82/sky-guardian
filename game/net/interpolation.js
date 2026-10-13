@@ -22,8 +22,9 @@ const mix = (a, b, t) => ({
 });
 
 export class SnapshotBuffer {
-  constructor({ delayMs = NET_TUNING.interpDelayMs, maxExtrapolateMs = 150, capacity = 32 } = {}) {
+  constructor({ delayMs = NET_TUNING.interpDelayMs, maxExtrapolateMs = 150, minSpanMs = 50, capacity = 32 } = {}) {
     this.delayMs = delayMs;
+    this.minSpanMs = minSpanMs;       // floor for the velocity estimate: packets that arrive together must not look infinitely fast
     this.maxExtrapolateMs = maxExtrapolateMs;
     this.capacity = capacity;
     this.samples = [];
@@ -33,7 +34,8 @@ export class SnapshotBuffer {
 
   push(atMs, state) {
     const last = this.samples[this.samples.length - 1];
-    if (last && atMs <= last.at) return;           // late, duplicate or out of order
+    if (last && atMs < last.at) return;            // late or out of order
+    if (last && atMs === last.at) { Object.assign(last, copy(state)); return; }   // coarse timers: newest data wins
     this.samples.push({ at: atMs, ...copy(state) });
     if (this.samples.length > this.capacity) this.samples.shift();
   }
@@ -52,8 +54,8 @@ export class SnapshotBuffer {
     if (t >= last.at) {
       if (n < 2) return copy(last);
       const prev = this.samples[n - 2];
-      const span = last.at - prev.at;
-      const k = span > 0 ? Math.min(t - last.at, this.maxExtrapolateMs) / span : 0;
+      const span = Math.max(last.at - prev.at, this.minSpanMs);
+      const k = Math.min(t - last.at, this.maxExtrapolateMs) / span;
       return mix(prev, last, 1 + k);
     }
     let i = 0;

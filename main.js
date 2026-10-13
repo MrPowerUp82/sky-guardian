@@ -1913,11 +1913,13 @@ function interruptEnemy() {
   enemyCurrentAnimName = '';
 }
 
-function damageEnemy(amount, source=null, knockback=0, label='') {
+// `opts.remote`: a guest's hit applied on the host. It has its own cooldown on the guest, so it skips the
+// shared invulnerability window and the host-only feedback (hitstop, shake, banner).
+function damageEnemy(amount, source=null, knockback=0, label='', opts = {}) {
   if (netSession?.isGuest) return guestDamageEnemy(amount, source, knockback, label);
-  if (!enemyReady || !enemyAlive || enemyHitInvuln > 0) return false;
+  if (!enemyReady || !enemyAlive || (enemyHitInvuln > 0 && !opts.remote)) return false;
   enemyHealth = Math.max(0, enemyHealth - amount);
-  enemyHitInvuln = .10;
+  if (!opts.remote) enemyHitInvuln = .10;
   enemyFlash = 1;
   const heavy = amount >= 40;
   {
@@ -1928,11 +1930,11 @@ function damageEnemy(amount, source=null, knockback=0, label='') {
     bursts.sparks(hitPoint, { count: heavy ? 38 : 16, power: heavy ? 1.3 : .8, dir: away, cone: 1 });
     if (heavy) bursts.dust({ x: hitPoint.x, y: enemyRoot.position.y + .1, z: hitPoint.z }, { count: 14, radius: 2, power: .8 });
   }
-  requestHitStop(heavy ? .11 : .065);
+  if (!opts.remote) requestHitStop(heavy ? .11 : .065);
   spawnDamageNumber(enemyRoot.position.clone().add(new THREE.Vector3(0, 2.5, 0)), amount, heavy ? 'heavy' : 'hit');
   updateCombatHUD();
 
-  cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
+  if (!opts.remote) cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
 
   if (enemyHealth <= 0) {
     if (source && knockback > 0) pushEnemyFrom(source, knockback);
@@ -1951,7 +1953,7 @@ function damageEnemy(amount, source=null, knockback=0, label='') {
   } else if (source && knockback > 0) {
     pushEnemyFrom(source, knockback * .3);
   }
-  if (label && !enragedNow) showMessage(`${label} · JASON -${amount}${reaction === 'stagger' ? '' : ' · RESISTIU'}`, 520);
+  if (label && !enragedNow && !opts.remote) showMessage(`${label} · JASON -${amount}${reaction === 'stagger' ? '' : ' · RESISTIU'}`, 520);
   return true;
 }
 
@@ -2133,10 +2135,10 @@ function updateEnemy(dt, time) {
   if (spaceState.active || reentryState.active) {
     if (typeof enemyRoot !== 'undefined') enemyRoot.visible = false;
     if (typeof enemyMarker !== 'undefined') enemyMarker.visible = false;
-    return;
+    if (!netSession?.isHost) return;      // online host: Jason keeps working for the guests below
   }
   if (!enemyReady) return;
-  enemyMarker.visible = enemyAlive;
+  enemyMarker.visible = enemyAlive && !spaceState.active && !reentryState.active;
   enemyMarker.rotation.z += dt * (enemyEnraged ? 2.2 : .75);
   updateEnemyFlash(dt);
   updateEnemyAttackWarning(dt);
@@ -2218,7 +2220,7 @@ function enemyUnderAim(maxDistance=280, radius=1.20) {
 // every remote player that is alive. Guests never run the boss AI.
 function bossTargets() {
   const targets = [];
-  if (!playerDead) targets.push({ id: 'local', x: hero.position.x, y: hero.position.y, z: hero.position.z });
+  if (!playerDead && !spaceState.active && !reentryState.active) targets.push({ id: 'local', x: hero.position.x, y: hero.position.y, z: hero.position.z });
   const remotes = netSession?.isHost ? netSession?.remoteLatest() ?? [] : [];
   for (const remote of remotes) if (!remote.dead) targets.push(remote);
   return targets;
@@ -3616,8 +3618,8 @@ function updateDynamicEvents(dt, time) {
   const controlLocked = netSession ? (!heroReady || helpVisible)
     : (!heroReady || playerDead || actionLocked || flightMachine.busy || leapAttack.active || helpVisible);
   const pauses = [
-    ['space', spaceState.active],
-    ['reentry', reentryState.active],
+    ['space', !netSession && spaceState.active],        // online, the shared world keeps running
+    ['reentry', !netSession && reentryState.active],
     ['dead/control-lock', controlLocked]
   ];
   for (const [reason, active] of pauses) {
@@ -3890,7 +3892,7 @@ function applyRemoteDamage({ amount, label, kb, src, from }) {
   if (label === '~heat') { damageEnemyHeat(amount); return; }
   if (label === '~ice') { enemyChill = 1; damageEnemyHeat(amount, 'ice'); return; }
   const who = netSession?.players.find(p => p.id === from)?.name || 'Aliado';
-  damageEnemy(amount, new THREE.Vector3(src[0], src[1], src[2]), kb, label ? `${label} · ${who}` : '');
+  damageEnemy(amount, new THREE.Vector3(src[0], src[1], src[2]), kb, label ? `${label} · ${who}` : '', { remote: true });
 }
 
 function bossStateForNet() {
@@ -3945,7 +3947,9 @@ function updateBossMirror(dt) {
   if (guestHeat.amount > 0 && guestHeat.clock > .25) flushGuestHeat();
   if (!enemyReady || !mirroredBoss) return;
   const b = mirroredBoss;
-  enemyMarker.visible = enemyAlive;
+  const inSpace = spaceState.active || reentryState.active;
+  enemyMarker.visible = enemyAlive && !inSpace;
+  if (inSpace) enemyRoot.visible = false;
   enemyMarker.rotation.z += dt * (enemyEnraged ? 2.2 : .75);
   updateEnemyFlash(dt);
   const pose = bossMirror.sample(performance.now());
@@ -5469,6 +5473,7 @@ const modelCache = new Map();
 let netStatus = 'idle';            // 'idle' | 'busy' | 'connected'
 let netError = '';
 let netNetwork = null;
+let netKeepAlive = 0;
 let lastNetFrame = 0;
 
 function loadRemoteGltf(url) {
@@ -5497,7 +5502,8 @@ function netLocalPose() {
     char: activeCharacterId, skin: skinIds[activeCharacterId],
     p: [clampWorld(hero.position.x), clampWorld(hero.position.y), clampWorld(hero.position.z)], q: [q.x, q.y, q.z, q.w],
     clip: flashActive() ? (flash.currentName || '') : (currentAnimName || ''),
-    hp: Math.max(0, playerHealth), dead: playerDead
+    // In space the position is in another coordinate frame: to everyone else you are simply not in the city.
+    hp: Math.max(0, playerHealth), dead: playerDead || spaceState.active || reentryState.active
   };
 }
 
@@ -5516,7 +5522,9 @@ function createNetGame() {
   return {
     getLocalPose: netLocalPose,
     getBossState: bossStateForNet,
-    getFireSnapshot: () => fireSystem.getSnapshot(),
+    getFireSnapshot: () => { fireSystem.settle(); return fireSystem.getSnapshot(); },
+    getMeteorSnapshot: () => dynamicEventSystem.getMeteorSnapshot(),
+    applyMeteorSync: list => dynamicEventSystem.syncMeteors(list),
     applyRemoteDamage,
     applyCool: applyCoolRequest,
     applyIntercept: applyInterceptRequest,
@@ -5554,6 +5562,8 @@ function beginOnlineSession(room) {
   netSession = new NetSession({ room, game: createNetGame() });
   netStatus = 'connected';
   dynamicEventSystem.setMirror(netSession.isGuest);
+  // A hidden tab stops requestAnimationFrame: keep pings and poses flowing so the room survives a quick tab switch.
+  netKeepAlive = setInterval(() => { if (document.hidden && netSession?.active) netSession.update(performance.now()); }, 1000);
   if (netSession.isGuest) {
     // The guest's own city state is replaced by the host's: start from a clean mirror.
     bossMirror.clear();
@@ -5569,6 +5579,7 @@ function leaveOnline() { endOnlineSession(''); }
 
 function endOnlineSession(message = '') {
   const wasGuest = !!netSession?.isGuest;
+  clearInterval(netKeepAlive);
   if (netSession?.active) netSession.leave();
   netSession = null;
   netStatus = 'idle';
@@ -5590,6 +5601,7 @@ function netTick() {
   lastNetFrame = now;
   netSession.update(now);
   if (!netSession?.active) return;               // update() may have closed the room
+  remoteHeroes.setHidden(spaceState.active || reentryState.active);
   remoteHeroes.update(dt, netSession.remotes(now));
   if (netSession.isGuest) updateBossMirror(dt);
 }

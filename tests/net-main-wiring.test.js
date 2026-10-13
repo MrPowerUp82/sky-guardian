@@ -142,3 +142,41 @@ test('solo safety: before the online section netSession is only used with ?., an
   assert.match(fn('endOnlineSession'), /netSession = null/);
   assert.match(main, /addEventListener\('pagehide', \(\) => netSession\?\.leave\(\)\)/);
 });
+
+// --- fix pass after the whole-branch review -------------------------------------------
+test('review fix: the host settles residual fire before every snapshot', () => {
+  assert.match(fn('createNetGame'), /getFireSnapshot: \(\) => \{ fireSystem\.settle\(\); return fireSystem\.getSnapshot\(\); \}/);
+});
+
+test('review fix: guest hits do not trigger hitstop, shake or banners on the host, and do not share one invulnerability window', () => {
+  assert.match(fn('applyRemoteDamage'), /\{ remote: true \}/);
+  const damage = fn('damageEnemy');
+  assert.match(damage, /enemyHitInvuln > 0 && !opts\.remote/);
+  assert.match(damage, /if \(!opts\.remote\) enemyHitInvuln = \.10;/);
+  assert.match(damage, /if \(!opts\.remote\) requestHitStop\(/);
+  assert.match(damage, /if \(!opts\.remote\) cameraShake = /);
+  assert.match(damage, /label && !enragedNow && !opts\.remote/);
+});
+
+test('review fix: a player in space or re-entry is absent from the city for everyone else', () => {
+  assert.match(fn('netLocalPose'), /dead: playerDead \|\| spaceState\.active \|\| reentryState\.active/);
+  assert.match(fn('bossTargets'), /!spaceState\.active && !reentryState\.active/);
+  // Jason and the events keep running for the guests while the host is up there.
+  const update = fn('updateEnemy');
+  assert.match(update, /if \(!netSession\?\.isHost\) return;/);
+  assert.match(fn('updateDynamicEvents'), /\['space', !netSession && spaceState\.active\]/);
+  assert.match(fn('updateDynamicEvents'), /\['reentry', !netSession && reentryState\.active\]/);
+  assert.match(fn('updateBossMirror'), /spaceState\.active \|\| reentryState\.active/);
+  assert.match(fn('netTick'), /remoteHeroes\.setHidden\(/);
+});
+
+test('review fix: meteors on a guest are re-synced from the host world snapshot', () => {
+  assert.match(fn('createNetGame'), /getMeteorSnapshot: \(\) => dynamicEventSystem\.getMeteorSnapshot\(\)/);
+  assert.match(fn('createNetGame'), /applyMeteorSync: list => dynamicEventSystem\.syncMeteors\(list\)/);
+});
+
+test('review fix: a hidden tab keeps the room alive with a timer', () => {
+  assert.match(fn('beginOnlineSession'), /netKeepAlive = setInterval\(/);
+  assert.match(fn('beginOnlineSession'), /document\.hidden/);
+  assert.match(fn('endOnlineSession'), /clearInterval\(netKeepAlive\)/);
+});

@@ -46,6 +46,19 @@ export class DynamicEventSystem {
   getSnapshots(){return this.events.map(e=>e.getSnapshot?.()).filter(Boolean);}
   // Online guests: the host decides what happens. Mirror mode keeps adopted events
   // advancing but never rolls new ones.
+  // Host: the clock of every meteor still in the air. Guest: snap local copies to it.
+  getMeteorSnapshot(){
+    return this.events
+      .filter(e=>e.type==='meteor' && (e.state==='warning'||e.state==='falling'))
+      .map(e=>({id:e.id,st:e.state,w:Math.round(e.warningElapsed*100)/100,f:Math.round(e.fallElapsed*100)/100}));
+  }
+  syncMeteors(list){
+    for(const m of list||[]) {
+      const e=this.events.find(x=>x.id===m.id && x.type==='meteor');
+      if(!e || (e.state!=='warning' && e.state!=='falling')) continue;   // an impact the host announced is never undone
+      e.state=m.st; e.warningElapsed=m.w; e.fallElapsed=m.f;
+    }
+  }
   setMirror(on){this.mirror=!!on;}
   adopt(event){
     if(event && !this.events.includes(event)) this.events.push(event);

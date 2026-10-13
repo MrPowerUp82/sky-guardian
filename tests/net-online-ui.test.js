@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { describeNetError, ERROR_TEXT, cleanPlayerName, validateJoinInput, describePlayer } from '../game/ui/online-panel.js';
+import { describeNetError, ERROR_TEXT, cleanPlayerName, validateJoinInput, describePlayer, stateSignature } from '../game/ui/online-panel.js';
 import { GameMap } from '../game/ui/game-map.js';
 
 test('every failure the net layer can raise has a Portuguese message', () => {
@@ -59,4 +59,19 @@ test('the map draws other players as green dots with names on the big map', () =
   calls.arc = 0;
   GameMap.prototype._markers.call({}, ctx, { ...state, peers: undefined }, place, 6, true);   // solo state has no peers
   assert.equal(calls.arc, 0);
+});
+
+test('the Online tab only rebuilds when something visible changed (a rebuild every tick drops focus and clicks)', () => {
+  const base = { status: 'connected', code: 'ABCD', isHost: true, error: '', players: [{ id: 'p0', name: 'Ana', char: 'superman', skin: 'classic', self: true, isHost: true }] };
+  const same = JSON.parse(JSON.stringify(base));
+  assert.equal(stateSignature(base, ''), stateSignature(same, ''), 'identical state -> identical signature');
+  const changes = [
+    { ...base, status: 'idle' }, { ...base, code: 'WXYZ' }, { ...base, error: 'x' },
+    { ...base, players: [...base.players, { id: 'p1', name: 'Bia', char: 'flash', skin: 'reverse', self: false, isHost: false }] },
+    { ...base, players: [{ ...base.players[0], skin: 'armor' }] }
+  ];
+  for (const next of changes) assert.notEqual(stateSignature(next, ''), stateSignature(base, ''));
+  assert.notEqual(stateSignature(base, 'Código inválido'), stateSignature(base, ''), 'a local validation error also re-renders');
+  const panel = fs.readFileSync(new URL('../game/ui/online-panel.js', import.meta.url), 'utf8');
+  assert.match(panel, /if \(signature === lastSignature\) return;/);
 });

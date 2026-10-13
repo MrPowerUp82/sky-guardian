@@ -121,7 +121,7 @@ export class Room extends Emitter {
 
   _refuse(entry, reason) {
     this._sendRaw(entry.conn, { t: 'reject', reason });
-    queueMicrotask(() => entry.conn.close());
+    setTimeout(() => entry.conn.close(), this.tuning.closeGraceMs);
   }
 
   _dropPeer(id, reason) {
@@ -196,9 +196,10 @@ export class Room extends Emitter {
     if (this.isHost) {
       this._broadcast({ t: 'leave', id: HOST_ID });
       this.closed = true;
-      for (const entry of this.peers.values()) queueMicrotask(() => entry.conn.close());
+      const entries = [...this.peers.values()];
       this.peers.clear();
-      this.handle?.close();
+      // Closing right after sending can drop the 'leave' on real WebRTC links: give it time to arrive.
+      setTimeout(() => { for (const entry of entries) entry.conn.close(); this.handle?.close(); }, this.tuning.closeGraceMs);
     } else {
       this.closed = true;
       this.conn?.close();

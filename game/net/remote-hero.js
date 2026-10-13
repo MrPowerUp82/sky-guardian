@@ -40,10 +40,13 @@ export class RemoteHeroes {
     this.scene = scene;
     this.loadGltf = loadGltf;
     this.entries = new Map();
+    this.hidden = false;           // the local player is in space: nobody else is on screen
     this._quat = new THREE.Quaternion();
   }
 
   get count() { return this.entries.size; }
+
+  setHidden(hidden) { this.hidden = !!hidden; }
 
   positions() {
     return [...this.entries.values()].filter(e => e.shown).map(e => ({ x: e.group.position.x, z: e.group.position.z, name: e.name }));
@@ -114,7 +117,7 @@ export class RemoteHeroes {
     entry.group.position.set(pose.x, pose.y, pose.z);
     entry.group.quaternion.set(pose.q[0], pose.q[1], pose.q[2], pose.q[3]);
     entry.shown = !remote.dead;
-    entry.group.visible = entry.shown;
+    entry.group.visible = entry.shown && !this.hidden;
     if (entry.clips && remote.clip) this._play(entry, resolveClipName(entry.clips, remote.clip, FALLBACK_CLIP[remote.char]));
   }
 

@@ -39,13 +39,22 @@ test('past the newest sample it extrapolates a little, then holds', () => {
   near(buf.sample(5000).x, 20);                 // capped at 100 ms -> +10, never runs away
 });
 
-test('late, duplicate and out-of-order packets are ignored', () => {
+test('late and out-of-order packets are ignored; a packet in the same millisecond replaces the last one', () => {
   const buf = new SnapshotBuffer({ delayMs: 0 });
   buf.push(1000, S(0)); buf.push(1100, S(10));
-  buf.push(1100, S(99)); buf.push(1050, S(55)); buf.push(900, S(-5));
+  buf.push(1100, S(99));                              // same stamp (coarse timers): the newer data wins
+  buf.push(1050, S(55)); buf.push(900, S(-5));        // older than the newest: dropped
   assert.equal(buf.length, 2);
-  near(buf.latest().x, 10);
-  near(buf.sample(1050).x, 5);
+  near(buf.latest().x, 99);
+  near(buf.sample(1050).x, 49.5);
+});
+
+test('packets delivered back to back do not blow up the extrapolated distance', () => {
+  const buf = new SnapshotBuffer({ delayMs: 0, maxExtrapolateMs: 150, minSpanMs: 50 });
+  buf.push(1000, S(0)); buf.push(1000.1, S(5));       // two packets that arrived together
+  const s = buf.sample(1150);
+  assert.ok(s.x <= 5 + 5 * (150 / 50) + 1e-9, `extrapolated to ${s.x}`);
+  assert.ok(s.x >= 5);
 });
 
 test('capacity drops the oldest sample; clear empties', () => {

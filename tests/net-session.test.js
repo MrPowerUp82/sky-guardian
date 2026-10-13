@@ -18,6 +18,8 @@ function fakeGame(name) {
     getLocalPose() { return this.pose; },
     getBossState: () => BOSS,
     getFireSnapshot: () => [['f1', .5]],
+    getMeteorSnapshot: () => [{ id: 'meteor-1', st: 'falling', w: 1.5, f: 3 }],
+    applyMeteorSync: rec('meteors'),
     applyRemoteDamage: rec('damage'), applyCool: rec('cool'), applyIntercept: rec('intercept'),
     applyBossState: rec('boss'), applyFireSnapshot: rec('fires'), handleWorldEvent: rec('event'),
     applyHit: rec('hit'), resetMission: rec('reset'),
@@ -130,4 +132,19 @@ test('when the host leaves the guest session goes inactive and reports why', asy
   assert.equal(guest.closeReason, 'host-left');
   assert.deepEqual(guestGame.calls.find(x => x[0] === 'closed').slice(1), ['host-left']);
   guest.update(5e6);                                                    // must not throw once closed
+});
+
+test('cooling of a different shape does not discard the request that was waiting', async () => {
+  const { c, host, guest, hostGame } = await pair();
+  guest.sendCool({ shape: 'cone', origin: [0, 1, 0], dir: [0, 0, 1], range: 24, half: 22, dt: .05, rate: .42, radius: 0 });
+  guest.sendCool({ shape: 'sphere', origin: [0, 1, 0], dir: [0, 0, 1], range: 0, half: 0, dt: .05, rate: .42, radius: 10 });
+  await step(c, 120, host, guest);
+  assert.deepEqual(hostGame.calls.filter(x => x[0] === 'cool').map(x => x[1].shape).sort(), ['cone', 'sphere']);
+});
+
+test('the host sends the meteor clock with every world snapshot and the guest applies it', async () => {
+  const { c, host, guest, guestGame } = await pair();
+  await step(c, 100, host, guest);
+  const sync = guestGame.calls.find(x => x[0] === 'meteors');
+  assert.deepEqual(sync[1], [{ id: 'meteor-1', st: 'falling', w: 1.5, f: 3 }]);
 });

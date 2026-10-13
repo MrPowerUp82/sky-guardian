@@ -73,6 +73,14 @@ export class FireSystem {
   countByEvent(eventId) { return this.getActiveSpots().filter(s => s.eventId === eventId).length; }
   remainingCapacity() { return Math.max(0, this.tuning.maxSpots - this.getActiveSpots().length); }
 
+  // Online host: a sliver of fire (rounded to 0 in snapshots) must not stay alive where no guest can
+  // see it, or its event would never resolve. Call before taking a snapshot.
+  settle(threshold = 0.02) {
+    for (const spot of this.getActiveSpots()) {
+      if (spot.intensity < threshold) { spot.intensity = 0; spot.state = 'extinguished'; spot.coolingTimer = 0; }
+    }
+  }
+
   // Active spots as [id, intensity]: what the online host broadcasts.
   getSnapshot() {
     return this.getActiveSpots().map(s => [s.id, Math.round(s.intensity * 100) / 100]);

@@ -39,7 +39,7 @@ export class NetSession {
     }
     if (this.isHost && now - this.lastWorld >= 1000 / NET_TUNING.worldHz) {
       this.lastWorld = now;
-      this.room.send({ t: 'world', boss: this.game.getBossState(), fires: this.game.getFireSnapshot() });
+      this.room.send({ t: 'world', boss: this.game.getBossState(), fires: this.game.getFireSnapshot(), meteors: this.game.getMeteorSnapshot() });
     }
     if (this.isGuest && this.cool && now - this.lastCool >= COOL_EVERY_MS) {
       this.lastCool = now;
@@ -53,7 +53,7 @@ export class NetSession {
     const game = this.game;
     switch (msg.t) {
       case 'pose': this._onPose(msg); break;
-      case 'world': if (this.isGuest) { game.applyBossState(msg.boss); game.applyFireSnapshot(msg.fires); } break;
+      case 'world': if (this.isGuest) { game.applyBossState(msg.boss); game.applyFireSnapshot(msg.fires); game.applyMeteorSync(msg.meteors); } break;
       case 'event': if (this.isGuest) game.handleWorldEvent(msg.kind, msg.data); break;
       case 'hit': if (this.isGuest) game.applyHit(msg); break;
       case 'reset': if (this.isGuest) game.resetMission(); break;
@@ -116,7 +116,10 @@ export class NetSession {
   sendCool(params) {
     if (!this.isGuest) return;
     if (this.cool && this.cool.shape === params.shape) this.cool = { ...params, dt: Math.min(.5, this.cool.dt + params.dt) };
-    else this.cool = { ...params };
+    else {
+      if (this.cool) this.room.send({ t: 'cool', ...this.cool });     // never discard a request that was waiting
+      this.cool = { ...params };
+    }
   }
 
   sendIntercept(params) {
