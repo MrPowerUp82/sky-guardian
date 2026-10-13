@@ -71,7 +71,7 @@ test('scheduler é atualizado uma vez por frame e pausa em espaço/reentrada', (
 
 test('reset limpa eventos, fogo, Ice Breath e apresentação', () => {
   const main=read('main.js');
-  const reset=main.match(/function\s+resetGame\s*\(\)\s*\{[\s\S]*?\n\}/)?.[0] || '';
+  const reset=main.match(/function\s+resetGame\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(reset,/iceBreathController\.reset\s*\(/);
   assert.match(reset,/dynamicEventSystem\.reset\s*\(/);
   assert.match(reset,/fireSystem\.reset\s*\(/);

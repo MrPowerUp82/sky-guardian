@@ -13,6 +13,11 @@ import { DynamicEventSystem } from './game/events/dynamic-event-system.js';
 import { EnemyPoise, enemyLevelStats } from './game/combat/enemy-poise.js';
 import { SnapshotBuffer, yawToQuat, quatToYaw } from './game/net/interpolation.js';
 import { chooseTarget, attackHits, scaledBossHealth } from './game/net/rules.js';
+import { Room } from './game/net/room.js';
+import { NetSession } from './game/net/net-session.js';
+import { createPeerNetwork } from './game/net/transport.js';
+import { RemoteHeroes } from './game/net/remote-hero.js';
+import { createOnlinePanel, describeNetError, cleanPlayerName } from './game/ui/online-panel.js';
 import { makeRoadCenters, classifyDistrict, lotFacingRotation, chunkKey, snapFocusToLightTexels } from './game/world/city-layout.js';
 import { SkyDome } from './game/fx/sky-dome.js';
 import { PostFx, postFxQualityFromUrl } from './game/fx/post-fx.js';
@@ -2073,7 +2078,10 @@ function damagePlayer(amount, fromDirection) {
     showMessage(`${getCharacter(activeCharacterId).name.toUpperCase()} DERROTADO · reiniciando...`, 1800);
     const serial = ++enemyRespawnSerial;
     setTimeout(() => {
-      if (playerDead && serial === enemyRespawnSerial) resetGame();
+      if (!playerDead || serial !== enemyRespawnSerial) return;
+      // Online: only restart the shared mission when every player is down (host decides).
+      const everyoneDown = !!netSession?.isHost && !!netSession?.remoteLatest().every(r => r.dead);
+      resetGame(netSession && !everyoneDown ? { scope: 'player' } : {});
     }, 1700);
   }
 }
@@ -4388,14 +4396,19 @@ function toggleFlight() {
   }
 }
 
-function resetGame() {
+function resetGame({ scope = 'all', fromNet = false } = {}) {
+  // A guest never restarts the shared world: pressing R (or dying) only respawns the guest.
+  if (netSession?.isGuest && !fromNet) scope = 'player';
+  const all = scope === 'all';
   stopReentryAudio();
   flash?.reset();
   iceBreathController.reset();
-  dynamicEventSystem.reset();
-  fireSystem.reset();
-  emergencyPresentation.reset();
-  recentBuildingFireIds.clear();
+  if (all) {
+    dynamicEventSystem.reset();
+    fireSystem.reset();
+    emergencyPresentation.reset();
+    recentBuildingFireIds.clear();
+  }
   iceBreathAction = null;
   reentryState.active = false;
   reentryState.elapsed = 0;
@@ -4411,7 +4424,7 @@ function resetGame() {
   setCityVisibility(true);
   hero.position.set(0, getSurfaceHeightAt(0, 130) + GROUND_EPS, 130);
   hero.rotation.set(0, 0, 0);
-  velocity.set(0,0,0); score=0;
+  velocity.set(0,0,0); if (all) score = 0;
   flightMachine.forceGrounded();
   superPunchImpactTimer = -1;
   normalPunchImpactTimer = -1;
@@ -4435,8 +4448,10 @@ function resetGame() {
   bufferedAttack = '';
   hitStopTimer = 0;
   landingTouchedDown = false;
-  applyEnemyLevel(1);
-  resetEnemy();
+  if (all) {
+    applyEnemyLevel(1);
+    resetEnemy();
+  }
   updateCombatHUD();
 
   if (mixer) {
@@ -4448,9 +4463,12 @@ function resetGame() {
   currentOnceAction = null; currentOnceListener = null;
   currentAnimName = '';
 
-  for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(ring.userData.baseScale ?? 1); }
-  document.querySelector('#score').textContent = 0;
-  showMessage('Missão reiniciada', 850);
+  if (all) {
+    for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(ring.userData.baseScale ?? 1); }
+    document.querySelector('#score').textContent = 0;
+  }
+  showMessage(all ? 'Missão reiniciada' : 'RENASCEU', 850);
+  if (all && netSession?.isHost && !fromNet) netSession?.broadcastReset();
 }
 
 let msgTimer;
@@ -5175,7 +5193,8 @@ function buildMapState() {
     enemy: enemyAlive && enemyReady ? { x: enemyRoot.position.x, z: enemyRoot.position.z } : null,
     rings: rings.filter(r => !r.userData.collected).map(r => [r.position.x, r.position.z]),
     fires: fireSystem.getActiveSpots().map(spot => [spot.position.x, spot.position.z]),
-    meteors
+    meteors,
+    peers: remoteHeroes.positions()
   };
 }
 
@@ -5406,7 +5425,7 @@ async function selectCharacter(id) {
   }
   setActiveCharacter(id);
   saveCharacterId(settingsStore, id);
-  resetGame();
+  resetGame(netSession ? { scope: 'player' } : {});
   showMessage(`${getCharacter(id).name.toUpperCase()}`, 1300);
   if (paused) resumeGame();
 }
@@ -5442,6 +5461,152 @@ function flashControlNodes() {
   return [keys, touch];
 }
 
+// ---------------------------------------------------------------------------
+// V21 ONLINE CO-OP — session lifecycle
+// ---------------------------------------------------------------------------
+const NAME_KEY = 'sky-guardian:player-name';
+const modelCache = new Map();
+let netStatus = 'idle';            // 'idle' | 'busy' | 'connected'
+let netError = '';
+let netNetwork = null;
+let lastNetFrame = 0;
+
+function loadRemoteGltf(url) {
+  if (!modelCache.has(url)) {
+    modelCache.set(url, new Promise((resolve, reject) => {
+      gltfLoader.load(url, gltf => { prepScene(gltf.scene, { shadows: true }); resolve(gltf); }, undefined, reject);
+    }).catch(err => { modelCache.delete(url); throw err; }));
+  }
+  return modelCache.get(url);
+}
+const remoteHeroes = new RemoteHeroes({ scene, loadGltf: loadRemoteGltf });
+
+function playerName() {
+  try { return cleanPlayerName(settingsStore?.getItem(NAME_KEY)) || 'Herói'; } catch { return 'Herói'; }
+}
+function savePlayerName(name) {
+  try { settingsStore?.setItem(NAME_KEY, name); } catch { /* optional */ }
+}
+const localProfile = () => ({ name: playerName(), char: activeCharacterId, skin: skinIds[activeCharacterId] });
+
+// The protocol caps coordinates at +-5000; space flight goes far beyond the city.
+const clampWorld = v => Math.max(-4900, Math.min(4900, v));
+function netLocalPose() {
+  const q = hero.quaternion;
+  return {
+    char: activeCharacterId, skin: skinIds[activeCharacterId],
+    p: [clampWorld(hero.position.x), clampWorld(hero.position.y), clampWorld(hero.position.z)], q: [q.x, q.y, q.z, q.w],
+    clip: flashActive() ? (flash.currentName || '') : (currentAnimName || ''),
+    hp: Math.max(0, playerHealth), dead: playerDead
+  };
+}
+
+// A guest that joins mid-game gets the fires and the running events right away.
+function sendWorldBootstrap(id) {
+  if (!netSession?.isHost) return;
+  const spots = fireSystem.getActiveSpots().map(fireDescriptor);
+  for (let i = 0; i < spots.length; i += 4) netSession.sendEventTo(id, 'fires', { descriptors: spots.slice(i, i + 4) });
+  for (const event of dynamicEventSystem.getActiveEvents()) {
+    if (['intercepted', 'resolved'].includes(event.state)) continue;
+    netSession.sendEventTo(id, event.type === 'meteor' ? 'spawn-meteor' : 'spawn-fire', describeEvent(event));
+  }
+}
+
+function createNetGame() {
+  return {
+    getLocalPose: netLocalPose,
+    getBossState: bossStateForNet,
+    getFireSnapshot: () => fireSystem.getSnapshot(),
+    applyRemoteDamage,
+    applyCool: applyCoolRequest,
+    applyIntercept: applyInterceptRequest,
+    applyBossState: applyBossMirror,
+    applyFireSnapshot: list => fireSystem.syncFromSnapshot(list),
+    handleWorldEvent: adoptWorldEvent,
+    applyHit: ({ amount, dir }) => damagePlayer(amount, new THREE.Vector3(dir[0], dir[1], dir[2])),
+    resetMission: () => resetGame({ fromNet: true }),
+    onPlayers: () => { rescaleBossForPlayers(); onlinePanel.sync(); pauseMenu.refresh(); },
+    onPlayerJoined: id => { sendWorldBootstrap(id); showMessage('JOGADOR ENTROU NA SALA', 1200); },
+    onClosed: reason => endOnlineSession(describeNetError(reason))
+  };
+}
+
+async function startOnline(role, code = '') {
+  if (netStatus !== 'idle') return;
+  netStatus = 'busy';
+  netError = '';
+  onlinePanel.sync();
+  try {
+    netNetwork ||= createPeerNetwork();
+    const options = { network: netNetwork, player: localProfile() };
+    const room = role === 'host' ? await Room.host(options) : await Room.join({ ...options, code });
+    beginOnlineSession(room);
+  } catch (err) {
+    console.warn('[net]', err);
+    netStatus = 'idle';
+    netError = describeNetError(err?.code);
+  }
+  onlinePanel.sync();
+  pauseMenu.refresh();
+}
+
+function beginOnlineSession(room) {
+  netSession = new NetSession({ room, game: createNetGame() });
+  netStatus = 'connected';
+  dynamicEventSystem.setMirror(netSession.isGuest);
+  if (netSession.isGuest) {
+    // The guest's own city state is replaced by the host's: start from a clean mirror.
+    bossMirror.clear();
+    mirroredBoss = null;
+    resetGame({ fromNet: true });
+  } else {
+    rescaleBossForPlayers();
+  }
+  showMessage(netSession.isHost ? `SALA ${room.code} CRIADA` : `NA SALA ${room.code}`, 1800);
+}
+
+function leaveOnline() { endOnlineSession(''); }
+
+function endOnlineSession(message = '') {
+  const wasGuest = !!netSession?.isGuest;
+  if (netSession?.active) netSession.leave();
+  netSession = null;
+  netStatus = 'idle';
+  netError = message;
+  dynamicEventSystem.setMirror(false);
+  remoteHeroes.clear();
+  bossMirror.clear();
+  mirroredBoss = null;
+  rescaleBossForPlayers();                       // back to the solo health scale
+  if (wasGuest) resetGame();                     // the guest world was a mirror: start a clean solo mission
+  if (message) showMessage(message, 2400);
+  onlinePanel.sync();
+  pauseMenu.refresh();
+}
+
+function netTick() {
+  const now = performance.now();
+  const dt = lastNetFrame ? Math.min(.05, (now - lastNetFrame) / 1000) : 0;
+  lastNetFrame = now;
+  netSession.update(now);
+  if (!netSession?.active) return;               // update() may have closed the room
+  remoteHeroes.update(dt, netSession.remotes(now));
+  if (netSession.isGuest) updateBossMirror(dt);
+}
+
+addEventListener('pagehide', () => netSession?.leave());
+
+const onlinePanel = createOnlinePanel({
+  getState: () => ({
+    status: netStatus, code: netSession?.code || '', isHost: !!netSession?.isHost, error: netError,
+    players: (netSession?.players || []).map(p => ({ ...p, self: p.id === netSession.selfId, isHost: p.id === 'p0' }))
+  }),
+  getName: playerName,
+  setName: savePlayerName,
+  onCreate: () => startOnline('host'),
+  onJoin: code => startOnline('guest', code),
+  onLeave: leaveOnline
+});
 // --- pause ---
 const pauseMenu = createPauseMenu({
   characters: CHARACTERS,
@@ -5449,6 +5614,7 @@ const pauseMenu = createPauseMenu({
   onSelectCharacter: id => selectCharacter(id),
   getSkinIds: () => skinIds,
   onSelectSkin: (characterId, skinId) => selectSkin(characterId, skinId),
+  onlinePanel,
   schema: SCHEMA,
   getSettings: () => settings,
   onChange: changeSetting,
@@ -5472,6 +5638,7 @@ const pauseMenu = createPauseMenu({
     ['Velocidade', `${Math.round(velocity.length() * 3.6)} km/h`],
     ['Altitude', `${Math.round(hero.position.y)} m`],
     ['Incêndios ativos', String(fireSystem.getActiveSpots().length)],
+    ...(netSession ? [['Sala online', `${netSession.code} · ${netSession.playerCount} jogador(es)`]] : []),
     ['Modo offline', window.__pwa?.label ?? 'indisponível']
   ],
   controlsSource: () => activeCharacterId === 'flash'
@@ -5527,12 +5694,14 @@ function animate(timestamp) {
   timer.update(timestamp);
   updateFps(frameMs);
   if (paused) {
+    if (netSession) netTick();
     // World frozen; keep drawing so graphics changes are visible behind the menu.
     pauseMenu.tick();
     postFx.render();
     requestAnimationFrame(animate);
     return;
   }
+  if (netSession) netTick();
   // Never step backwards: a negative delta would destabilise every damped lerp.
   const dt = THREE.MathUtils.clamp(timer.getDelta(), 0, .033);
   const time = timer.getElapsed();
@@ -5550,7 +5719,7 @@ function animate(timestamp) {
   updateDodge(dt);
   if (flashOn) flash.update(dt, time);
   else { updateBufferedAttack(dt); updateHero(dt,time); }
-  updateEnemy(worldDt * chillScale,time);
+  if (netSession?.isGuest) { /* mirrored in netTick */ } else updateEnemy(worldDt * chillScale,time);
   updateCityLife(worldDt,time);
   updatePlayerRegen(dt);
   updateHeroReactions(dt);
@@ -5702,7 +5871,7 @@ function triggerLeapAttackImpact() {
 if (new URLSearchParams(location.search).has('debug')) {
   window.__sky = {
     THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio, IS_TOUCH, PROFILE, lookBy, pauseMenu, openPause, resumeGame, changeSetting, selectCharacter, layoutRings, rings, dodge, dynamicEventSystem, tryInterceptActiveMeteor, applyIceBreathDamage,
-    get flash() { return flash; }, get flashFx() { return flashFx; }, get reverseFx() { return reverseFx; }, get activeCharacterId() { return activeCharacterId; },
+    get flash() { return flash; }, get netSession() { return netSession; }, get flashFx() { return flashFx; }, get reverseFx() { return reverseFx; }, get activeCharacterId() { return activeCharacterId; },
     get settings() { return settings; }, get paused() { return paused; }, get gameMap() { return gameMap; }, buildMapState,
     get mixer() { return mixer; },
     get enemyMixer() { return enemyMixer; },

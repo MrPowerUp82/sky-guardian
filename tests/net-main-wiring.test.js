@@ -96,3 +96,49 @@ test('the protocol can carry the largest event payloads within the message limit
   const meteorSpawn = { t: 'event', kind: 'spawn-meteor', data: { id: 'meteor-12', impactPoint: { x: 1, y: 2, z: 3 }, startPosition: { x: 1, y: 360, z: 3 }, warningSeconds: 1.5, fallSeconds: 12, fireCount: 6, state: 'falling', warningElapsed: 1.5, fallElapsed: 3.25, fireIds: [] } };
   assert.ok(decode(encode(meteorSpawn)));
 });
+
+const section = main.slice(main.indexOf('V21 ONLINE CO-OP — session lifecycle'));
+
+test('online: the session section creates rooms, wires every NetSession callback and ends cleanly', () => {
+  assert.ok(main.includes('V21 ONLINE CO-OP — session lifecycle'));
+  assert.match(main, /import \{ Room \} from '\.\/game\/net\/room\.js';/);
+  assert.match(main, /import \{ createPeerNetwork \} from '\.\/game\/net\/transport\.js';/);
+  const game = fn('createNetGame');
+  for (const key of ['getLocalPose', 'getBossState', 'getFireSnapshot', 'applyRemoteDamage', 'applyCool', 'applyIntercept',
+    'applyBossState', 'applyFireSnapshot', 'handleWorldEvent', 'applyHit', 'resetMission', 'onPlayers', 'onPlayerJoined', 'onClosed']) {
+    assert.match(game, new RegExp(`\\b${key}\\b`), key);
+  }
+  assert.match(game, /resetMission: \(\) => resetGame\(\{ fromNet: true \}\)/);
+  assert.match(fn('beginOnlineSession'), /dynamicEventSystem\.setMirror\(netSession\.isGuest\)/);
+  assert.match(fn('endOnlineSession'), /dynamicEventSystem\.setMirror\(false\)/);
+  assert.match(fn('endOnlineSession'), /remoteHeroes\.clear\(\)/);
+  assert.match(fn('startOnline'), /describeNetError\(err\?\.code\)/);
+  assert.match(fn('sendWorldBootstrap'), /sendEventTo\(id, 'fires'/);
+  assert.match(fn('netLocalPose'), /clampWorld/);
+});
+
+test('online: the frame loop keeps the net alive while paused and never runs the boss AI on guests', () => {
+  const animate = fn('animate');
+  assert.match(animate, /if \(paused\) \{\s*if \(netSession\) netTick\(\);/);
+  assert.match(animate, /if \(netSession\?\.isGuest\) \{ \/\* mirrored in netTick \*\/ \} else updateEnemy\(/);
+  assert.match(animate, /netTick\(\)/);
+  assert.match(fn('netTick'), /updateBossMirror\(dt\)/);
+  assert.match(fn('buildMapState'), /peers: remoteHeroes\.positions\(\)/);
+});
+
+test('online: dying only respawns you; only the host restarts the whole mission', () => {
+  const reset = fn('resetGame');
+  assert.match(reset, /function resetGame\(\{ scope = 'all', fromNet = false \} = \{\}\)/);
+  assert.match(reset, /if \(netSession\?\.isGuest && !fromNet\) scope = 'player';/);
+  assert.match(reset, /if \(all && netSession\?\.isHost && !fromNet\) netSession\?\.broadcastReset\(\);/);
+  assert.match(fn('damagePlayer'), /everyoneDown/);
+  assert.match(fn('damagePlayer'), /resetGame\(netSession && !everyoneDown \? \{ scope: 'player' \} : \{\}\)/);
+  assert.match(fn('selectCharacter'), /resetGame\(netSession \? \{ scope: 'player' \} : \{\}\)/);
+});
+
+test('solo safety: before the online section netSession is only used with ?., and leaving restores solo', () => {
+  const solo = main.slice(0, main.indexOf('V21 ONLINE CO-OP — session lifecycle'));
+  assert.doesNotMatch(solo, /\bnetSession\.[a-zA-Z]/);
+  assert.match(fn('endOnlineSession'), /netSession = null/);
+  assert.match(main, /addEventListener\('pagehide', \(\) => netSession\?\.leave\(\)\)/);
+});
