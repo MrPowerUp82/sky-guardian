@@ -31,11 +31,12 @@ export class Room extends Emitter {
     this.role = role; this.code = code; this.now = now; this.tuning = tuning;
     this.selfId = HOST_ID; this.hostId = HOST_ID; this.seed = 0;
     this.players = new Map();
-    this.peers = new Map();       // host only: id -> { conn, id, lastSeen }
+    this.peers = new Map();       // host only: id -> { conn, id, silentMs }
     this.conn = null;             // guest only: connection to the host
     this.handle = null;           // host only: what network.host() returned
     this.closed = false;
-    this.lastSeen = now(); this.lastPing = now();
+    this.silentMs = 0;            // guest: how long the host has been quiet (while this page was running)
+    this.lastTick = now(); this.lastPing = now();
     this._nextId = 1;
   }
 
@@ -71,7 +72,7 @@ export class Room extends Emitter {
       conn.onMessage(text => {
         const msg = decode(text);
         if (!msg) return;
-        room.lastSeen = room.now();
+        room.silentMs = 0;
         if (settled) return room._guestReceive(msg);
         if (msg.t === 'reject') { finish(reject, new RoomError(msg.reason)); conn.close(); return; }
         if (msg.t !== 'welcome') return;
@@ -86,7 +87,7 @@ export class Room extends Emitter {
 
   // --- host side ------------------------------------------------------------------
   _hostAccept(conn) {
-    const entry = { conn, id: null, lastSeen: this.now(), windowAt: this.now(), count: 0 };
+    const entry = { conn, id: null, silentMs: 0, windowAt: this.now(), count: 0 };
     conn.onMessage(text => this._hostReceive(entry, text));
     conn.onClose(() => { if (entry.id) this._dropPeer(entry.id, 'lost'); });
   }
@@ -94,7 +95,7 @@ export class Room extends Emitter {
   _hostReceive(entry, text) {
     const msg = decode(text);
     if (!msg || this.closed) return;
-    entry.lastSeen = this.now();
+    entry.silentMs = 0;
     if (!entry.id) {
       if (msg.t !== 'hello') return;
       if (msg.proto !== PROTOCOL_VERSION || msg.build !== NET_BUILD) return this._refuse(entry, 'version');
@@ -182,11 +183,15 @@ export class Room extends Emitter {
   tick(now = this.now()) {
     if (this.closed) return;
     const t = this.tuning;
+    // Silence is counted in ticks that actually ran: a frozen page (model loading, GC) must not look like a dead peer.
+    const gap = Math.min(Math.max(0, now - this.lastTick), t.maxTickGapMs);
+    this.lastTick = now;
     if (this.isHost) {
-      for (const [id, entry] of [...this.peers]) if (now - entry.lastSeen > t.timeoutMs) this._dropPeer(id, 'timeout');
+      for (const [id, entry] of [...this.peers]) { entry.silentMs += gap; if (entry.silentMs > t.timeoutMs) this._dropPeer(id, 'timeout'); }
       if (now - this.lastPing >= t.pingMs) { this.lastPing = now; this._broadcast({ t: 'ping', ts: now }); }
     } else {
-      if (now - this.lastSeen > t.timeoutMs) return this._closeLocal('timeout');
+      this.silentMs += gap;
+      if (this.silentMs > t.timeoutMs) return this._closeLocal('timeout');
       if (now - this.lastPing >= t.pingMs) { this.lastPing = now; this._sendRaw(this.conn, { t: 'ping', ts: now }); }
     }
   }

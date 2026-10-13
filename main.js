@@ -5535,7 +5535,7 @@ function createNetGame() {
     resetMission: () => resetGame({ fromNet: true }),
     onPlayers: () => { rescaleBossForPlayers(); onlinePanel.sync(); pauseMenu.refresh(); },
     onPlayerJoined: id => { sendWorldBootstrap(id); showMessage('JOGADOR ENTROU NA SALA', 1200); },
-    onClosed: reason => endOnlineSession(describeNetError(reason))
+    onClosed: reason => { console.warn('[net] sala encerrada:', reason); endOnlineSession(describeNetError(reason)); }
   };
 }
 
@@ -5883,7 +5883,7 @@ function triggerLeapAttackImpact() {
 if (new URLSearchParams(location.search).has('debug')) {
   window.__sky = {
     THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio, IS_TOUCH, PROFILE, lookBy, pauseMenu, openPause, resumeGame, changeSetting, selectCharacter, layoutRings, rings, dodge, dynamicEventSystem, tryInterceptActiveMeteor, applyIceBreathDamage,
-    get flash() { return flash; }, get netSession() { return netSession; }, get flashFx() { return flashFx; }, get reverseFx() { return reverseFx; }, get activeCharacterId() { return activeCharacterId; },
+    get flash() { return flash; }, get netSession() { return netSession; }, get remoteHeroes() { return remoteHeroes; }, netTick: () => netTick(), get flashFx() { return flashFx; }, get reverseFx() { return reverseFx; }, get activeCharacterId() { return activeCharacterId; },
     get settings() { return settings; }, get paused() { return paused; }, get gameMap() { return gameMap; }, buildMapState,
     get mixer() { return mixer; },
     get enemyMixer() { return enemyMixer; },

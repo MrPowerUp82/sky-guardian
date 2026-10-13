@@ -1,4 +1,5 @@
 import test from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { resolveClipName, clipPlaysOnce } from '../game/net/remote-clips.js';
 import { CHARACTERS, getCharacter } from '../game/characters/registry.js';
@@ -25,4 +26,13 @@ test('every character declares the model height and yaw the remote copy needs', 
   }
   assert.equal(getCharacter('superman').model.yaw, -Math.PI / 2);   // MultiVersus rig faces +X
   assert.equal(getCharacter('flash').model.yaw, 0);                  // Mixamo rigs face +Z
+});
+
+test('the remote model is measured only after its matrices are up to date (a stale clone measured ~3 mm and was scaled 700x)', () => {
+  const src = fs.readFileSync(new URL('../game/net/remote-hero.js', import.meta.url), 'utf8');
+  const clone = src.indexOf('cloneSkeleton(gltf.scene)');
+  const update = src.indexOf('root.updateMatrixWorld(true)');
+  const measure = src.indexOf('new THREE.Box3().setFromObject(root)');
+  assert.ok(clone > 0 && update > clone, 'updateMatrixWorld comes after the clone');
+  assert.ok(measure > update, 'and before the bounding box is measured');
 });

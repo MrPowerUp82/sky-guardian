@@ -102,7 +102,7 @@ test('sendTo reaches only the target guest', async () => {
   assert.deepEqual(got, { g1: [], g2: ['hit'] });
 });
 
-test('silence past the timeout drops a guest (host side) and the host (guest side)', async () => {
+test('silence past the timeout drops a guest (host side) and the host (guest side), counted tick by tick', async () => {
   const c = clock();
   const net = new MemoryNetwork();
   const host = await Room.host({ network: net, player: who('Host'), now: c.now, rand: () => .1 });
@@ -112,9 +112,7 @@ test('silence past the timeout drops a guest (host side) and the host (guest sid
   host.on('left', (id, why) => left.push([id, why]));
   const closed = [];
   g1.on('closed', why => closed.push(why));
-  c.t = NET_TUNING.timeoutMs + 1;
-  host.tick(c.t);
-  g1.tick(c.t);
+  for (let i = 0; i <= NET_TUNING.timeoutMs / 1000; i++) { c.t += 1000; host.tick(c.t); g1.tick(c.t); }   // the whole timeout in quiet seconds
   await flush();
   assert.deepEqual(left, [['p1', 'timeout']]);
   assert.equal(host.players.size, 1);
@@ -203,4 +201,26 @@ test('a dropped connection closes the guest with "lost"', async () => {
   host.peers.get('p1').conn.close();
   await flush();
   assert.deepEqual(reasons, ['lost']);
+});
+
+test('a long local freeze (model loading, GC) is not mistaken for the other side going silent', async () => {
+  const c = clock();
+  const net = new MemoryNetwork();
+  const host = await Room.host({ network: net, player: who('Host'), now: c.now, rand: () => .1 });
+  const g1 = await Room.join({ network: net, code: host.code, player: who('G1'), now: c.now });
+  await flush();
+  const closed = [];
+  g1.on('closed', why => closed.push(why));
+  c.t += 30_000;                      // the whole page was frozen for 30 s
+  host.tick(c.t);
+  g1.tick(c.t);
+  await flush();
+  assert.equal(host.players.size, 2, 'the host did not drop the guest');
+  assert.deepEqual(closed, [], 'the guest did not give up on the host');
+  assert.equal(g1.closed, false);
+  // ...and real silence is still caught.
+  for (let i = 0; i <= NET_TUNING.timeoutMs / 1000; i++) { c.t += 1000; host.tick(c.t); g1.tick(c.t); }
+  await flush();
+  assert.equal(host.players.size, 1);
+  assert.deepEqual(closed, ['timeout']);
 });

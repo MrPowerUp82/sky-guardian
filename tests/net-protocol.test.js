@@ -89,3 +89,8 @@ test('world snapshots carry the meteor clock; older or malformed meteor lists ar
   assert.equal(decode(JSON.stringify({ ...samples.world, meteors: Array(9).fill(meteors[0]) })), null);
   assert.equal(decode(JSON.stringify({ ...samples.world, meteors: [{ ...meteors[0], f: 1e9 }] })).meteors[0].f, 120);
 });
+
+test('the silence timeout leaves room for a peer whose page freezes while it loads a 14 MB model', () => {
+  // The other side cannot tell a frozen page from a dead one; real disconnects arrive as close events anyway.
+  assert.ok(NET_TUNING.timeoutMs >= 15000, `timeoutMs is ${NET_TUNING.timeoutMs}`);
+});

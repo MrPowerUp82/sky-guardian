@@ -93,7 +93,7 @@ Constantes de ajuste ficam em um só objeto, `NET_TUNING`:
 | `poseHz` | 15 |
 | `worldHz` | 10 |
 | `interpDelayMs` | 100 |
-| `timeoutMs` | 5000 |
+| `timeoutMs` | 15000 |
 | `maxPlayers` | 4 |
 | `bossHealthPerExtraPlayer` | +50% |
 | `roomCodeLength` | 4 |
@@ -114,7 +114,7 @@ Tudo isso é condicionado a `netSession?.active`. Sem sala, o caminho antigo rod
 1. **Criar sala:** o anfitrião gera um código de 4 letras (alfabeto sem letras ambíguas), registra o ID `skyguardian-<código>` no PeerJS e espera.
 2. **Entrar:** o convidado digita o código e conecta ao mesmo ID. Manda `hello`. O anfitrião valida `proto` e `build`, aplica o limite de jogadores e responde `welcome` ou `reject`.
 3. **Jogo:** `pose` de todos; `world` e `event` do anfitrião; pedidos `dmg`, `cool` e `intercept` dos convidados.
-4. **Saída:** `leave` ou 5 s sem `ping`/mensagens remove o jogador. Se o anfitrião cai, os convidados voltam ao modo solo com a mensagem "A sala foi encerrada".
+4. **Saída:** `leave` ou 15 s sem `ping`/mensagens remove o jogador (a contagem só avança em ticks que realmente rodaram, para um travamento local não parecer silêncio do outro lado). Se o anfitrião cai, os convidados voltam ao modo solo com a mensagem "A sala foi encerrada".
 
 ## 7. Interface
 
@@ -178,3 +178,4 @@ Decididas ao ler o código para escrever o plano (`docs/superpowers/plans/2026-1
 3. Online, o loop de rede e o espelho continuam rodando durante a pausa; só o mundo simulado do anfitrião congela enquanto ele está no menu.
 4. Módulo extra `game/net/rules.js` com as regras puras (escolha de alvo, acerto do Jason, escala de vida).
 5. O `pose` inclui `char` e `skin`, para o remoto trocar de modelo sem mensagem extra.
+6. `timeoutMs` passou de 5 s para 15 s: quem carrega um modelo de 14 MB (ou roda numa máquina lenta) pode travar a página por vários segundos, e o outro lado não distingue isso de uma queda; quedas reais chegam como evento `close`.

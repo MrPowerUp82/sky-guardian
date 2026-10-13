@@ -97,6 +97,9 @@ export class RemoteHeroes {
       if (entry.disposed) return;
       const root = cloneSkeleton(gltf.scene);
       root.traverse(o => { if (o.isSkinnedMesh) o.frustumCulled = false; });
+      // A clone inherits the source's stale bone matrices; measured as is, a skinned model can come out
+      // millimetres tall and get scaled hundreds of times. Bring them up to date first.
+      root.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(root);
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());

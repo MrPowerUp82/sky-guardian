@@ -57,7 +57,7 @@ class FakeEmitter {
   on(name, fn) { (this.h[name] ||= []).push(fn); return this; }
   emit(name, ...args) { (this.h[name] || []).forEach(fn => fn(...args)); }
 }
-function makeFakePeer({ failWith = null, hosts = new Map() } = {}) {
+function makeFakePeer({ failWith = null, hosts = new Map(), made = [] } = {}) {
   return class FakePeer extends FakeEmitter {
     constructor(id, options) {
       super();
@@ -70,6 +70,7 @@ function makeFakePeer({ failWith = null, hosts = new Map() } = {}) {
     }
     connect(target) {
       const conn = new FakeConn(target);
+      made.push(conn);
       const host = hosts.get(target);
       queueMicrotask(() => {
         if (!host) return this.emit('error', { type: 'peer-unavailable' });
@@ -118,4 +119,24 @@ test('peer network: missing PeerJS or a silent broker fail cleanly', async () =>
   class Silent { constructor() {} on() { return this; } destroy() {} }
   const net = createPeerNetwork({ Peer: Silent, connectTimeoutMs: 20 });
   await assert.rejects(net.host('ABCD'), e => e.code === 'timeout');
+});
+
+test('peer network: a non-fatal connection error does not end the room, a real close does', async () => {
+  const hosts = new Map(), made = [];
+  const Peer = makeFakePeer({ hosts, made });
+  const net = createPeerNetwork({ Peer });
+  const host = await net.host('ABCD');
+  let hostSide;
+  host.onConnection(conn => { hostSide = conn; });
+  const guest = await net.join('ABCD');
+  await flush();
+  let closes = 0;
+  guest.onClose(() => closes++);
+  assert.ok(hostSide, 'host got the connection');
+  const underlying = made[0];                     // the guest's PeerJS-level connection
+  underlying.emit('error', new Error('transient data channel error'));
+  assert.equal(closes, 0, 'an error on an open connection is not a close');
+  underlying.open = false;
+  underlying.emit('error', new Error('connection is gone'));
+  assert.equal(closes, 1, 'an error on a connection that is no longer open ends it');
 });

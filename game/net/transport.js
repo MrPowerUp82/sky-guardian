@@ -86,7 +86,14 @@ function wrapConn(conn) {
     send(text) { if (conn.open) conn.send(text); },
     close() { try { conn.close(); } catch { /* already closed */ } },
     onMessage(fn) { inbox.attach(fn); },
-    onClose(fn) { conn.on('close', fn); conn.on('error', fn); }
+    onClose(fn) {
+      conn.on('close', fn);
+      // PeerJS also emits 'error' for hiccups on a link that is still open; only a link that is gone ends the room.
+      conn.on('error', err => {
+        if (conn.open) console.warn('[net] erro de conexão ignorado:', err?.message || err);
+        else fn();
+      });
+    }
   };
 }
 

@@ -13,7 +13,7 @@ export const NET_TUNING = Object.freeze({
   poseHz: 15,
   worldHz: 10,
   interpDelayMs: 100,
-  timeoutMs: 5000,
+  timeoutMs: 15000,              // a peer that is loading a big model can freeze for seconds; real drops arrive as close events
   pingMs: 1500,
   maxPlayers: 4,
   bossHealthPerExtraPlayer: .5,
@@ -22,6 +22,7 @@ export const NET_TUNING = Object.freeze({
   maxNameLength: 16,
   maxMessageChars: 4096,
   maxMessagesPerSecond: 120,
+  maxTickGapMs: 1000,            // one tick never counts for more silence than this: a frozen page is not a dead peer
   closeGraceMs: 250,             // keep a link open this long after the last message (PeerJS drops unsent data on close)
   worldLimit: 5000
 });
