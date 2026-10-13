@@ -11,6 +11,13 @@ import { MeteorEvent } from './game/events/meteor-event.js';
 import { BuildingFireEvent, selectBuildingTarget, createBuildingFireSpots } from './game/events/building-fire-event.js';
 import { DynamicEventSystem } from './game/events/dynamic-event-system.js';
 import { EnemyPoise, enemyLevelStats } from './game/combat/enemy-poise.js';
+import { SnapshotBuffer, yawToQuat, quatToYaw } from './game/net/interpolation.js';
+import { chooseTarget, attackHits, scaledBossHealth } from './game/net/rules.js';
+import { Room } from './game/net/room.js';
+import { NetSession } from './game/net/net-session.js';
+import { createPeerNetwork } from './game/net/transport.js';
+import { RemoteHeroes } from './game/net/remote-hero.js';
+import { createOnlinePanel, describeNetError, cleanPlayerName } from './game/ui/online-panel.js';
 import { makeRoadCenters, classifyDistrict, lotFacingRotation, chunkKey, snapFocusToLightTexels } from './game/world/city-layout.js';
 import { SkyDome } from './game/fx/sky-dome.js';
 import { PostFx, postFxQualityFromUrl } from './game/fx/post-fx.js';
@@ -1662,6 +1669,8 @@ const ENEMY_SPAWN = new THREE.Vector3(0, GROUND_EPS, 185);
 const ENEMY_RESPAWN_DELAY = 7;
 let enemyLevel = 1;
 let enemyStats = enemyLevelStats(1);
+// V21 online: filled in by the session code further down; null while playing solo.
+let netSession = null;
 let enemyRespawnTimer = -1;
 let enemyEnraged = false;
 let enemyFlash = 0;
@@ -1753,16 +1762,18 @@ function scheduleEnemyEvents(slotName, speed) {
   return enemyEventQueue.length;
 }
 function dispatchEnemyEvent(event) {
-  if (!event || event.type !== 'damage' || !enemyAlive || playerDead) return;
+  if (!event || event.type !== 'damage' || !enemyAlive) return;
   const hitbox = hitboxById(enemyAnimConfig, event.hitboxId);
   const origin = boneWorldPoint(enemyBoneMap, hitbox, enemyRoot, 1.05);
-  const heroCenter = hero.position.clone().add(new THREE.Vector3(0, 1.0, 0));
   const radius = Number(event.radius) || Number(hitbox?.radius) || 2.2;
-  if (origin.distanceTo(heroCenter) > radius + .85) return;
-  const dir = heroCenter.clone().sub(origin); dir.y = 0;
-  if (dir.lengthSq() < .001) dir.set(0,0,1).applyQuaternion(enemyRoot.quaternion);
-  dir.normalize();
-  damagePlayer(Number(event.damage)||1, dir);
+  for (const target of bossTargets()) {
+    const center = new THREE.Vector3(target.x, target.y + 1.0, target.z);
+    if (origin.distanceTo(center) > radius + .85) continue;
+    const dir = center.clone().sub(origin); dir.y = 0;
+    if (dir.lengthSq() < .001) dir.set(0,0,1).applyQuaternion(enemyRoot.quaternion);
+    dir.normalize();
+    applyBossHit(target, Number(event.damage)||1, dir);
+  }
 }
 function updateEnemyEvents(dt) {
   if (!enemyEventQueue.length) return;
@@ -1902,10 +1913,13 @@ function interruptEnemy() {
   enemyCurrentAnimName = '';
 }
 
-function damageEnemy(amount, source=null, knockback=0, label='') {
-  if (!enemyReady || !enemyAlive || enemyHitInvuln > 0) return false;
+// `opts.remote`: a guest's hit applied on the host. It has its own cooldown on the guest, so it skips the
+// shared invulnerability window and the host-only feedback (hitstop, shake, banner).
+function damageEnemy(amount, source=null, knockback=0, label='', opts = {}) {
+  if (netSession?.isGuest) return guestDamageEnemy(amount, source, knockback, label);
+  if (!enemyReady || !enemyAlive || (enemyHitInvuln > 0 && !opts.remote)) return false;
   enemyHealth = Math.max(0, enemyHealth - amount);
-  enemyHitInvuln = .10;
+  if (!opts.remote) enemyHitInvuln = .10;
   enemyFlash = 1;
   const heavy = amount >= 40;
   {
@@ -1916,11 +1930,11 @@ function damageEnemy(amount, source=null, knockback=0, label='') {
     bursts.sparks(hitPoint, { count: heavy ? 38 : 16, power: heavy ? 1.3 : .8, dir: away, cone: 1 });
     if (heavy) bursts.dust({ x: hitPoint.x, y: enemyRoot.position.y + .1, z: hitPoint.z }, { count: 14, radius: 2, power: .8 });
   }
-  requestHitStop(heavy ? .11 : .065);
+  if (!opts.remote) requestHitStop(heavy ? .11 : .065);
   spawnDamageNumber(enemyRoot.position.clone().add(new THREE.Vector3(0, 2.5, 0)), amount, heavy ? 'heavy' : 'hit');
   updateCombatHUD();
 
-  cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
+  if (!opts.remote) cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
 
   if (enemyHealth <= 0) {
     if (source && knockback > 0) pushEnemyFrom(source, knockback);
@@ -1939,7 +1953,7 @@ function damageEnemy(amount, source=null, knockback=0, label='') {
   } else if (source && knockback > 0) {
     pushEnemyFrom(source, knockback * .3);
   }
-  if (label && !enragedNow) showMessage(`${label} · JASON -${amount}${reaction === 'stagger' ? '' : ' · RESISTIU'}`, 520);
+  if (label && !enragedNow && !opts.remote) showMessage(`${label} · JASON -${amount}${reaction === 'stagger' ? '' : ' · RESISTIU'}`, 520);
   return true;
 }
 
@@ -1974,7 +1988,17 @@ function defeatEnemy() {
 function applyEnemyLevel(level) {
   enemyLevel = Math.max(1, level);
   enemyStats = enemyLevelStats(enemyLevel);
-  enemyMaxHealth = enemyStats.maxHealth;
+  enemyMaxHealth = scaledBossHealth(enemyStats.maxHealth, netSession?.isHost ? netSession?.playerCount : 1);
+}
+
+// A player joined or left mid-fight: keep Jason at the same fraction of the new maximum.
+function rescaleBossForPlayers() {
+  const max = scaledBossHealth(enemyStats.maxHealth, netSession?.isHost ? netSession?.playerCount : 1);
+  if (max === enemyMaxHealth) return;
+  const ratio = enemyMaxHealth > 0 ? enemyHealth / enemyMaxHealth : 1;
+  enemyMaxHealth = max;
+  enemyHealth = enemyAlive ? Math.max(1, Math.round(max * ratio)) : 0;
+  updateCombatHUD();
 }
 
 // A road crossing 45–110 m away from Superman, preferring the closest fit.
@@ -2056,13 +2080,16 @@ function damagePlayer(amount, fromDirection) {
     showMessage(`${getCharacter(activeCharacterId).name.toUpperCase()} DERROTADO · reiniciando...`, 1800);
     const serial = ++enemyRespawnSerial;
     setTimeout(() => {
-      if (playerDead && serial === enemyRespawnSerial) resetGame();
+      if (!playerDead || serial !== enemyRespawnSerial) return;
+      // Online: only restart the shared mission when every player is down (host decides).
+      const everyoneDown = !!netSession?.isHost && !!netSession?.remoteLatest().every(r => r.dead);
+      resetGame(netSession && !everyoneDown ? { scope: 'player' } : {});
     }, 1700);
   }
 }
 
 function beginEnemyAttack(kind='combo') {
-  if (!enemyAlive || enemyActionLocked || enemyAttackCooldown > 0 || playerDead) return;
+  if (!enemyAlive || enemyActionLocked || enemyAttackCooldown > 0 || !bossTargets().length) return;
   let candidates, timeScale, impact, damage, range, cooldown, slotName;
   if (kind === 'dash') {
     slotName = 'specialAttack';
@@ -2097,26 +2124,21 @@ function beginEnemyAttack(kind='combo') {
 }
 
 function triggerEnemyAttackImpact() {
-  if (!enemyAlive || playerDead) return;
+  if (!enemyAlive) return;
   const dir = new THREE.Vector3(0,0,1).applyQuaternion(enemyRoot.quaternion).normalize();
   const origin = enemyRoot.position.clone().add(new THREE.Vector3(0,1.0,0)).addScaledVector(dir, 1.05);
-  const target = hero.position.clone().add(new THREE.Vector3(0,1.0,0));
-  const delta = target.sub(origin);
-  const dist = delta.length();
-  if (dist > enemyAttackRange || Math.abs(hero.position.y - enemyRoot.position.y) > 3.2) return;
-  const n = delta.normalize();
-  if (n.dot(dir) < .08) return;
-  damagePlayer(enemyAttackDamage, dir);
+  const victims = attackHits(bossTargets(), { origin, dir, range: enemyAttackRange, baseY: enemyRoot.position.y });
+  for (const victim of victims) applyBossHit(victim, enemyAttackDamage, dir);
 }
 
 function updateEnemy(dt, time) {
   if (spaceState.active || reentryState.active) {
     if (typeof enemyRoot !== 'undefined') enemyRoot.visible = false;
     if (typeof enemyMarker !== 'undefined') enemyMarker.visible = false;
-    return;
+    if (!netSession?.isHost) return;      // online host: Jason keeps working for the guests below
   }
   if (!enemyReady) return;
-  enemyMarker.visible = enemyAlive;
+  enemyMarker.visible = enemyAlive && !spaceState.active && !reentryState.active;
   enemyMarker.rotation.z += dt * (enemyEnraged ? 2.2 : .75);
   updateEnemyFlash(dt);
   updateEnemyAttackWarning(dt);
@@ -2144,9 +2166,10 @@ function updateEnemy(dt, time) {
       triggerEnemyAttackImpact();
     }
   }
-  if (playerDead) { enemyIdle(); return; }
+  const target = chooseTarget(bossTargets(), enemyRoot.position);
+  if (!target) { enemyIdle(); return; }
 
-  const toHero = hero.position.clone().sub(enemyRoot.position);
+  const toHero = new THREE.Vector3(target.x, target.y, target.z).sub(enemyRoot.position);
   const verticalDelta = toHero.y;
   const horizontal = new THREE.Vector3(toHero.x, 0, toHero.z);
   const distance = horizontal.length();
@@ -2193,6 +2216,21 @@ function enemyUnderAim(maxDistance=280, radius=1.20) {
   return closest.distanceTo(center) <= radius;
 }
 
+// Everyone the boss may chase or hit. Solo: just the hero. Online host: the hero plus
+// every remote player that is alive. Guests never run the boss AI.
+function bossTargets() {
+  const targets = [];
+  if (!playerDead && !spaceState.active && !reentryState.active) targets.push({ id: 'local', x: hero.position.x, y: hero.position.y, z: hero.position.z });
+  const remotes = netSession?.isHost ? netSession?.remoteLatest() ?? [] : [];
+  for (const remote of remotes) if (!remote.dead) targets.push(remote);
+  return targets;
+}
+
+function applyBossHit(victim, amount, dir) {
+  if (victim.id === 'local') damagePlayer(amount, dir);
+  else netSession?.sendHit(victim.id, amount, [dir.x, dir.y, dir.z]);
+}
+
 function triggerNormalPunchImpact() {
   if (!enemyAlive) return;
   const dir = new THREE.Vector3(0,0,1).applyQuaternion(hero.quaternion).normalize();
@@ -2237,7 +2275,7 @@ function updateEnemyAttackWarning(dt) {
   const warning = enemyAttackWarning;
   if (warning.active) {
     warning.elapsed += dt;
-    if (warning.elapsed >= warning.duration || !enemyAlive || playerDead) warning.active = false;
+    if (warning.elapsed >= warning.duration || !enemyAlive || !bossTargets().length) warning.active = false;
   }
   warning.group.visible = warning.active && enemyRoot.visible;
   if (!warning.group.visible) return;
@@ -3019,11 +3057,31 @@ const METEOR_COLLISION_RADIUS = METEOR_RADIUS;
 // Flying through a falling meteor at or above this speed (m/s, ~860 km/h, reached
 // within a second of Shift+W) shatters it; slower and it is a solid obstacle.
 const METEOR_SMASH_SPEED = 240;
+// What the host tells guests about an event: enough to rebuild it (also for late joiners).
+const fireDescriptor = spot => spot && ({
+  id: spot.id, eventId: spot.eventId, buildingId: spot.buildingId, source: spot.source,
+  position: spot.position, normal: spot.normal, radius: spot.radius, intensity: spot.intensity
+});
+function describeEvent(event) {
+  if (event.type === 'meteor') {
+    return {
+      id: event.id, impactPoint: event.impactPoint, startPosition: event.startPosition, warningSeconds: event.warningSeconds,
+      fallSeconds: event.fallSeconds, fireCount: event.fireCount, state: event.state, warningElapsed: event.warningElapsed,
+      fallElapsed: event.fallElapsed, fireIds: [...event.fireIds]
+    };
+  }
+  return { id: event.id, buildingId: event.buildingId, descriptors: event.fireIds.map(id => fireDescriptor(fireSystem.getSpot(id))).filter(Boolean) };
+}
+function announceSpawn(event) {
+  if (event) netSession?.broadcastEvent(event.type === 'meteor' ? 'spawn-meteor' : 'spawn-fire', describeEvent(event));
+  return event;
+}
+
 const dynamicEventSystem = new DynamicEventSystem({
   rng: eventRng,
   factories: {
-    meteor: createMeteorEvent,
-    buildingFire: createBuildingFireEvent
+    meteor: (...args) => announceSpawn(createMeteorEvent(...args)),
+    buildingFire: (...args) => announceSpawn(createBuildingFireEvent(...args))
   }
 });
 
@@ -3236,7 +3294,7 @@ function spawnMeteorShatterFx(position, supersonic) {
   if (supersonic) requestHitStop(.12);
 }
 
-function handleEventCommand(command) {
+function handleEventCommand(command, { mirrored = false } = {}) {
   if (!command) return;
   const event = eventById(command.eventId);
   if (command.type === 'meteor-impact') {
@@ -3251,13 +3309,16 @@ function handleEventCommand(command) {
     cameraShake = Math.max(cameraShake, impactShake);
     pushCityActorsFrom(point, 40, 20);
     const requested = Math.min(Number(command.requestedFireCount) || 3, fireSystem.remainingCapacity());
-    const descriptors = buildMeteorImpactFireDescriptors(command.eventId, point, requested);
+    // The host rolls the fire positions once and ships them with the command; guests use those.
+    const descriptors = mirrored ? (command.descriptors || []) : buildMeteorImpactFireDescriptors(command.eventId, point, requested);
+    command.descriptors = descriptors;
     const fireIds = fireSystem.addSpots(descriptors);
     event?.attachFireIds?.(fireIds);
     showMessage(fireIds.length ? `IMPACTO · APAGUE ${fireIds.length} FOCOS` : 'IMPACTO DO METEORO', 1500);
     return;
   }
   if (command.type === 'meteor-intercepted') {
+    meteorInterceptMethod = command.method || meteorInterceptMethod;
     emergencyPresentation.pulseAirburst(command.position);
     emergencyPresentation.removeMeteor(command.eventId, { exploded:false });
     event?.dispose?.();
@@ -3278,6 +3339,42 @@ function handleEventCommand(command) {
   }
 }
 
+// Host: run the command here, then tell the guests. Guest: commands come only from the host.
+function emitEventCommand(command) {
+  if (netSession?.isGuest) return;
+  handleEventCommand(command);
+  netSession?.broadcastEvent('command', command);
+}
+
+// Guest: rebuild what the host announced.
+function adoptWorldEvent(kind, data) {
+  if (kind === 'command') { handleEventCommand(data, { mirrored: true }); return; }
+  if (kind === 'fires') { fireSystem.addSpots(data.descriptors || []); return; }
+  if (kind === 'spawn-meteor') {
+    const event = new MeteorEvent({
+      id: data.id, impactPoint: data.impactPoint, startPosition: data.startPosition,
+      warningSeconds: data.warningSeconds, fallSeconds: data.fallSeconds, fireCount: data.fireCount
+    });
+    if (data.state) {                                   // late joiner: pick up mid-flight
+      event.state = data.state;
+      event.warningElapsed = data.warningElapsed || 0;
+      event.fallElapsed = data.fallElapsed || 0;
+      event._impactEmitted = data.state === 'impacted';
+    }
+    event.attachFireIds(data.fireIds || []);
+    dynamicEventSystem.adopt(event);
+    if (!data.state || data.state === 'warning') showMessage('ALERTA · METEORO DETECTADO', 1250);
+    return;
+  }
+  if (kind === 'spawn-fire') {
+    fireSystem.addSpots(data.descriptors || []);
+    const event = new BuildingFireEvent({ id: data.id, buildingId: data.buildingId });
+    event.attachFireIds((data.descriptors || []).map(d => d.id));
+    dynamicEventSystem.adopt(event);
+    showMessage('EMERGÊNCIA · INCÊNDIO EM PRÉDIO', 1100);
+  }
+}
+
 let meteorInterceptMethod = 'superPunch';
 function tryInterceptActiveMeteor(method, origin, radius = 0, speed = 0) {
   const meteor = dynamicEventSystem.getActiveEvents().find(event => event.type === 'meteor' && event.state === 'falling');
@@ -3285,9 +3382,14 @@ function tryInterceptActiveMeteor(method, origin, radius = 0, speed = 0) {
   const snapshot = meteor.getSnapshot();
   const meteorPosition = new THREE.Vector3(snapshot.position.x, snapshot.position.y, snapshot.position.z);
   if (origin.distanceTo(meteorPosition) > Math.max(0, radius) + METEOR_COLLISION_RADIUS) return false;
+  if (netSession?.isGuest) {                    // the host decides; its commands come back as events
+    if (method === 'supersonic' && speed < METEOR_SMASH_SPEED) return false;
+    netSession?.sendIntercept({ method, origin: [origin.x, origin.y, origin.z], radius, speed });
+    return true;
+  }
   const commands = meteor.tryIntercept({ method, speed, machOne:METEOR_SMASH_SPEED });
   meteorInterceptMethod = method;
-  for (const command of commands) handleEventCommand(command);
+  for (const command of commands) emitEventCommand({ ...command, method });
   return commands.length > 0;
 }
 
@@ -3305,6 +3407,10 @@ function trySupersonicMeteorSweep(previousPosition, currentPosition, speed) {
   // At this speed the hero drags a shock cone, so a near miss is enough to
   // shatter the rock (it is 6 m wide, plus 4 m of shock around the hero).
   return tryInterceptActiveMeteor('supersonic', closest, 4, speed);
+}
+
+function applyInterceptRequest(msg) {
+  tryInterceptActiveMeteor(msg.method, new THREE.Vector3(msg.origin[0], msg.origin[1], msg.origin[2]), msg.radius, msg.speed);
 }
 
 function iceBreathSlotName(kind, variant) {
@@ -3417,6 +3523,33 @@ function iceBreathOccluded(origin, spot) {
   return false;
 }
 
+// Cooling is applied locally everywhere (instant feedback). A guest also asks the host to
+// apply the same cooling to the authoritative fire, so the fire goes out for everyone.
+function coolFireCone(args) {
+  const affected = fireSystem.applyCoolingCone(args);
+  netSession?.sendCool({
+    shape: 'cone', origin: [args.origin.x, args.origin.y, args.origin.z], dir: [args.direction.x, args.direction.y, args.direction.z],
+    range: args.range, half: args.halfAngleDeg, dt: args.dt, rate: args.rate, radius: 0
+  });
+  return affected;
+}
+function coolFireSphere(args) {
+  const affected = fireSystem.applyCoolingSphere(args);
+  netSession?.sendCool({
+    shape: 'sphere', origin: [args.origin.x, args.origin.y, args.origin.z], dir: [0, 0, 1],
+    range: 0, half: 0, dt: args.dt, rate: args.rate, radius: args.radius
+  });
+  return affected;
+}
+function applyCoolRequest(msg) {
+  const origin = { x: msg.origin[0], y: msg.origin[1], z: msg.origin[2] };
+  if (msg.shape === 'sphere') { fireSystem.applyCoolingSphere({ origin, radius: msg.radius, dt: msg.dt, rate: msg.rate }); return; }
+  fireSystem.applyCoolingCone({
+    origin, direction: { x: msg.dir[0], y: msg.dir[1], z: msg.dir[2] },
+    range: msg.range, halfAngleDeg: msg.half, dt: msg.dt, rate: msg.rate
+  });
+}
+
 function updateIceBreath(dt) {
   if (!iceBreathController.active) {
     emergencyPresentation.setIceBreath({active:false});
@@ -3436,7 +3569,7 @@ function updateIceBreath(dt) {
 
   const origin = getIceBreathOrigin();
   const direction = getAimDirection(new THREE.Vector3());
-  const affected = fireSystem.applyCoolingCone({
+  const affected = coolFireCone({
     origin,
     direction,
     range: ICE_BREATH_TUNING.range,
@@ -3481,10 +3614,12 @@ function syncEmergencyPresentation(dt = 0) {
 
 function updateDynamicEvents(dt, time) {
   const helpVisible = !document.querySelector('#help')?.classList.contains('hidden');
-  const controlLocked = !heroReady || playerDead || actionLocked || flightMachine.busy || leapAttack.active || helpVisible;
+  // Online, the shared world must not stop because one player is busy punching or dead.
+  const controlLocked = netSession ? (!heroReady || helpVisible)
+    : (!heroReady || playerDead || actionLocked || flightMachine.busy || leapAttack.active || helpVisible);
   const pauses = [
-    ['space', spaceState.active],
-    ['reentry', reentryState.active],
+    ['space', !netSession && spaceState.active],        // online, the shared world keeps running
+    ['reentry', !netSession && reentryState.active],
     ['dead/control-lock', controlLocked]
   ];
   for (const [reason, active] of pauses) {
@@ -3509,7 +3644,7 @@ function updateDynamicEvents(dt, time) {
     activeFireSpots: fireSystem.getActiveSpots().length,
     remainingFires: eventId => fireSystem.countByEvent(eventId)
   });
-  for (const command of commands) handleEventCommand(command);
+  for (const command of commands) emitEventCommand(command);
   syncEmergencyPresentation(dt);
 }
 
@@ -3739,13 +3874,134 @@ function stopHeatVision(overheated=false) {
   }
 }
 
-function damageEnemyHeat(amount) {
+function damageEnemyHeat(amount, kind = 'heat') {
+  if (netSession?.isGuest) { guestHeatDamage(amount, kind); return; }
   if (!enemyReady || !enemyAlive) return;
   enemyHealth = Math.max(0, enemyHealth - amount);
   updateCombatHUD();
   cameraShake = Math.max(cameraShake, .035);
   if (enemyHealth <= 0) defeatEnemy();
   else checkEnemyEnrage();
+}
+
+// ---------------------------------------------------------------------------
+// V21 online boss: the host simulates Jason, guests mirror him
+// ---------------------------------------------------------------------------
+function applyRemoteDamage({ amount, label, kb, src, from }) {
+  // Heat vision and ice breath arrive as small accumulated ticks: no stagger, no hitstop.
+  if (label === '~heat') { damageEnemyHeat(amount); return; }
+  if (label === '~ice') { enemyChill = 1; damageEnemyHeat(amount, 'ice'); return; }
+  const who = netSession?.players.find(p => p.id === from)?.name || 'Aliado';
+  damageEnemy(amount, new THREE.Vector3(src[0], src[1], src[2]), kb, label ? `${label} · ${who}` : '', { remote: true });
+}
+
+function bossStateForNet() {
+  return {
+    p: [enemyRoot.position.x, enemyRoot.position.y, enemyRoot.position.z], y: enemyRoot.rotation.y,
+    clip: enemyCurrentAction?.getClip?.().name || '', rate: enemyCurrentAction?.timeScale ?? 1, tok: enemyActionToken,
+    hp: enemyHealth, max: enemyMaxHealth, rage: enemyEnraged, lvl: enemyLevel, alive: enemyAlive, lock: enemyActionLocked
+  };
+}
+
+const bossMirror = new SnapshotBuffer({ delayMs: 120 });
+const ONE_SHOT_BOSS_CLIP = /attack|_hr_|flyback|deflect/i;
+let mirroredBoss = null;
+let mirrorClip = '';
+let mirrorToken = -1;
+let guestHitCooldown = 0;
+const guestHeat = { amount: 0, kind: 'heat', clock: 0 };
+
+function resetBossMirrorVisuals() {
+  enemyDeathFall = 0;
+  enemyVisual.rotation.set(0, 0, 0);
+  enemyMarker.material.opacity = .78;
+  enemyMarker.material.color.set(mirroredBoss?.rage ? 0xff6a1a : 0xff263e);
+  enemyActionLocked = false;
+  if (enemyMixer) enemyMixer.stopAllAction();
+  enemyCurrentAction = null;
+  enemyCurrentAnimName = '';
+  mirrorClip = '';
+  mirrorToken = -1;
+}
+
+// Guest: a world snapshot from the host (about 10 per second).
+function applyBossMirror(b) {
+  mirroredBoss = b;
+  bossMirror.push(performance.now(), { x: b.p[0], y: b.p[1], z: b.p[2], q: yawToQuat(b.y) });
+  if (b.lvl !== enemyLevel) { enemyLevel = b.lvl; enemyStats = enemyLevelStats(b.lvl); }
+  enemyHealth = b.hp;
+  enemyMaxHealth = b.max;
+  if (b.rage !== enemyEnraged) { enemyEnraged = b.rage; enemyMarker.material.color.set(b.rage ? 0xff6a1a : 0xff263e); }
+  if (b.alive !== enemyAlive) {
+    enemyAlive = b.alive;
+    if (b.alive) resetBossMirrorVisuals();
+    else { enemyDeathFall = 0; enemyMarker.material.opacity = .18; showMessage('JASON DERROTADO!', 2200); }
+  }
+  updateCombatHUD();
+}
+
+// Guest, every frame: place Jason where the host says he is and play the host's clip.
+function updateBossMirror(dt) {
+  guestHitCooldown = Math.max(0, guestHitCooldown - dt);
+  guestHeat.clock += dt;
+  if (guestHeat.amount > 0 && guestHeat.clock > .25) flushGuestHeat();
+  if (!enemyReady || !mirroredBoss) return;
+  const b = mirroredBoss;
+  const inSpace = spaceState.active || reentryState.active;
+  enemyMarker.visible = enemyAlive && !inSpace;
+  if (inSpace) enemyRoot.visible = false;
+  enemyMarker.rotation.z += dt * (enemyEnraged ? 2.2 : .75);
+  updateEnemyFlash(dt);
+  const pose = bossMirror.sample(performance.now());
+  if (pose) {
+    enemyRoot.position.set(pose.x, pose.y, pose.z);
+    enemyRoot.rotation.y = quatToYaw(pose.q);
+  }
+  if (!enemyAlive) {
+    enemyDeathFall = Math.min(1, enemyDeathFall + dt / .6);
+    const fall = enemyDeathFall * enemyDeathFall * (3 - 2 * enemyDeathFall);
+    enemyVisual.rotation.x = -1.3 * fall;
+  }
+  if (b.clip && (b.clip !== mirrorClip || b.tok !== mirrorToken)) {
+    mirrorClip = b.clip;
+    mirrorToken = b.tok;
+    const clip = enemyFindClip([b.clip]);
+    if (clip) enemyPlayClip(clip, .12, ONE_SHOT_BOSS_CLIP.test(b.clip), b.rate || 1);
+  } else if (enemyCurrentAction) {
+    enemyCurrentAction.timeScale = b.rate || 1;
+  }
+}
+
+// Guest: a hit lands visually right away; the host decides the damage.
+function guestDamageEnemy(amount, source, knockback, label) {
+  if (!enemyReady || !enemyAlive || guestHitCooldown > 0) return false;
+  guestHitCooldown = .1;
+  const from = source || hero.position;
+  const hitPoint = enemyRoot.position.clone().add(new THREE.Vector3(0, 1.4, 0));
+  const away = hitPoint.clone().sub(from).setY(0);
+  if (away.lengthSq() < .001) away.set(0, 0, 1);
+  away.normalize();
+  const heavy = amount >= 40;
+  bursts.sparks(hitPoint, { count: heavy ? 38 : 16, power: heavy ? 1.3 : .8, dir: away, cone: 1 });
+  requestHitStop(heavy ? .11 : .065);
+  spawnDamageNumber(enemyRoot.position.clone().add(new THREE.Vector3(0, 2.5, 0)), amount, heavy ? 'heavy' : 'hit');
+  cameraShake = Math.max(cameraShake, Math.min(.58, .14 + amount / 110));
+  netSession?.sendDamage({ amount, label: label || '', kb: knockback || 0, src: [from.x, from.y, from.z] });
+  return true;
+}
+
+// Guest: heat vision / ice breath tick every frame; send them as one request per ~250 ms.
+function guestHeatDamage(amount, kind) {
+  if (!enemyReady || !enemyAlive) return;
+  guestHeat.amount += amount;
+  guestHeat.kind = kind;
+  if (guestHeat.amount >= 3) flushGuestHeat();
+}
+function flushGuestHeat() {
+  if (guestHeat.amount <= 0) return;
+  netSession?.sendDamage({ amount: guestHeat.amount, label: `~${guestHeat.kind}`, kb: 0, src: [hero.position.x, hero.position.y, hero.position.z] });
+  guestHeat.amount = 0;
+  guestHeat.clock = 0;
 }
 
 // Ice Breath hurts and chills Jason while he stands in the cone: damage arrives
@@ -3763,7 +4019,7 @@ function applyIceBreathDamage(origin, direction, dt) {
   if (iceDamageClock < .2) return;
   const amount = ICE_BREATH_TUNING.damagePerSecond * iceDamageClock;
   iceDamageClock = 0;
-  damageEnemyHeat(amount);
+  damageEnemyHeat(amount, 'ice');
   spawnDamageNumber(center.clone().add(new THREE.Vector3(0, 1.3, 0)), amount, 'hit');
   bursts.sparks(center, { count: 5, power: .5, color: [.55, .9, 1.4] });
 }
@@ -4144,14 +4400,19 @@ function toggleFlight() {
   }
 }
 
-function resetGame() {
+function resetGame({ scope = 'all', fromNet = false } = {}) {
+  // A guest never restarts the shared world: pressing R (or dying) only respawns the guest.
+  if (netSession?.isGuest && !fromNet) scope = 'player';
+  const all = scope === 'all';
   stopReentryAudio();
   flash?.reset();
   iceBreathController.reset();
-  dynamicEventSystem.reset();
-  fireSystem.reset();
-  emergencyPresentation.reset();
-  recentBuildingFireIds.clear();
+  if (all) {
+    dynamicEventSystem.reset();
+    fireSystem.reset();
+    emergencyPresentation.reset();
+    recentBuildingFireIds.clear();
+  }
   iceBreathAction = null;
   reentryState.active = false;
   reentryState.elapsed = 0;
@@ -4167,7 +4428,7 @@ function resetGame() {
   setCityVisibility(true);
   hero.position.set(0, getSurfaceHeightAt(0, 130) + GROUND_EPS, 130);
   hero.rotation.set(0, 0, 0);
-  velocity.set(0,0,0); score=0;
+  velocity.set(0,0,0); if (all) score = 0;
   flightMachine.forceGrounded();
   superPunchImpactTimer = -1;
   normalPunchImpactTimer = -1;
@@ -4191,8 +4452,10 @@ function resetGame() {
   bufferedAttack = '';
   hitStopTimer = 0;
   landingTouchedDown = false;
-  applyEnemyLevel(1);
-  resetEnemy();
+  if (all) {
+    applyEnemyLevel(1);
+    resetEnemy();
+  }
   updateCombatHUD();
 
   if (mixer) {
@@ -4204,9 +4467,12 @@ function resetGame() {
   currentOnceAction = null; currentOnceListener = null;
   currentAnimName = '';
 
-  for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(ring.userData.baseScale ?? 1); }
-  document.querySelector('#score').textContent = 0;
-  showMessage('Missão reiniciada', 850);
+  if (all) {
+    for (const ring of rings) { ring.userData.collected=false; ring.visible=true; ring.scale.setScalar(ring.userData.baseScale ?? 1); }
+    document.querySelector('#score').textContent = 0;
+  }
+  showMessage(all ? 'Missão reiniciada' : 'RENASCEU', 850);
+  if (all && netSession?.isHost && !fromNet) netSession?.broadcastReset();
 }
 
 let msgTimer;
@@ -4931,7 +5197,8 @@ function buildMapState() {
     enemy: enemyAlive && enemyReady ? { x: enemyRoot.position.x, z: enemyRoot.position.z } : null,
     rings: rings.filter(r => !r.userData.collected).map(r => [r.position.x, r.position.z]),
     fires: fireSystem.getActiveSpots().map(spot => [spot.position.x, spot.position.z]),
-    meteors
+    meteors,
+    peers: remoteHeroes.positions()
   };
 }
 
@@ -5047,10 +5314,10 @@ function createFlashApi() {
       return position ? tryInterceptActiveMeteor('superPunch', position, 0, 0) : false;
     },
     pushActors: (point, radius, strength) => pushCityActorsFrom(point, radius, strength),
-    coolCone: (origin, dir, range, halfAngle, dt, rate) => fireSystem.applyCoolingCone({
+    coolCone: (origin, dir, range, halfAngle, dt, rate) => coolFireCone({
       origin, direction: dir, range, halfAngleDeg: halfAngle, dt, rate, occluded: spot => iceBreathOccluded(origin, spot)
     }),
-    coolRadius: (point, radius, dt, rate) => fireSystem.applyCoolingSphere({ origin: point, radius, dt, rate }),
+    coolRadius: (point, radius, dt, rate) => coolFireSphere({ origin: point, radius, dt, rate }),
     isDead: () => playerDead,
     setInvuln: seconds => { playerInvuln = Math.max(playerInvuln, seconds); },
     dodge,
@@ -5162,7 +5429,7 @@ async function selectCharacter(id) {
   }
   setActiveCharacter(id);
   saveCharacterId(settingsStore, id);
-  resetGame();
+  resetGame(netSession ? { scope: 'player' } : {});
   showMessage(`${getCharacter(id).name.toUpperCase()}`, 1300);
   if (paused) resumeGame();
 }
@@ -5198,6 +5465,160 @@ function flashControlNodes() {
   return [keys, touch];
 }
 
+// ---------------------------------------------------------------------------
+// V21 ONLINE CO-OP — session lifecycle
+// ---------------------------------------------------------------------------
+const NAME_KEY = 'sky-guardian:player-name';
+const modelCache = new Map();
+let netStatus = 'idle';            // 'idle' | 'busy' | 'connected'
+let netError = '';
+let netNetwork = null;
+let netKeepAlive = 0;
+let lastNetFrame = 0;
+
+function loadRemoteGltf(url) {
+  if (!modelCache.has(url)) {
+    modelCache.set(url, new Promise((resolve, reject) => {
+      gltfLoader.load(url, gltf => { prepScene(gltf.scene, { shadows: true }); resolve(gltf); }, undefined, reject);
+    }).catch(err => { modelCache.delete(url); throw err; }));
+  }
+  return modelCache.get(url);
+}
+const remoteHeroes = new RemoteHeroes({ scene, loadGltf: loadRemoteGltf });
+
+function playerName() {
+  try { return cleanPlayerName(settingsStore?.getItem(NAME_KEY)) || 'Herói'; } catch { return 'Herói'; }
+}
+function savePlayerName(name) {
+  try { settingsStore?.setItem(NAME_KEY, name); } catch { /* optional */ }
+}
+const localProfile = () => ({ name: playerName(), char: activeCharacterId, skin: skinIds[activeCharacterId] });
+
+// The protocol caps coordinates at +-5000; space flight goes far beyond the city.
+const clampWorld = v => Math.max(-4900, Math.min(4900, v));
+function netLocalPose() {
+  const q = hero.quaternion;
+  return {
+    char: activeCharacterId, skin: skinIds[activeCharacterId],
+    p: [clampWorld(hero.position.x), clampWorld(hero.position.y), clampWorld(hero.position.z)], q: [q.x, q.y, q.z, q.w],
+    clip: flashActive() ? (flash.currentName || '') : (currentAnimName || ''),
+    // In space the position is in another coordinate frame: to everyone else you are simply not in the city.
+    hp: Math.max(0, playerHealth), dead: playerDead || spaceState.active || reentryState.active
+  };
+}
+
+// A guest that joins mid-game gets the fires and the running events right away.
+function sendWorldBootstrap(id) {
+  if (!netSession?.isHost) return;
+  const spots = fireSystem.getActiveSpots().map(fireDescriptor);
+  for (let i = 0; i < spots.length; i += 4) netSession.sendEventTo(id, 'fires', { descriptors: spots.slice(i, i + 4) });
+  for (const event of dynamicEventSystem.getActiveEvents()) {
+    if (['intercepted', 'resolved'].includes(event.state)) continue;
+    netSession.sendEventTo(id, event.type === 'meteor' ? 'spawn-meteor' : 'spawn-fire', describeEvent(event));
+  }
+}
+
+function createNetGame() {
+  return {
+    getLocalPose: netLocalPose,
+    getBossState: bossStateForNet,
+    getFireSnapshot: () => { fireSystem.settle(); return fireSystem.getSnapshot(); },
+    getMeteorSnapshot: () => dynamicEventSystem.getMeteorSnapshot(),
+    applyMeteorSync: list => dynamicEventSystem.syncMeteors(list),
+    applyRemoteDamage,
+    applyCool: applyCoolRequest,
+    applyIntercept: applyInterceptRequest,
+    applyBossState: applyBossMirror,
+    applyFireSnapshot: list => fireSystem.syncFromSnapshot(list),
+    handleWorldEvent: adoptWorldEvent,
+    applyHit: ({ amount, dir }) => damagePlayer(amount, new THREE.Vector3(dir[0], dir[1], dir[2])),
+    resetMission: () => resetGame({ fromNet: true }),
+    onPlayers: () => { rescaleBossForPlayers(); onlinePanel.sync(); pauseMenu.refresh(); },
+    onPlayerJoined: id => { sendWorldBootstrap(id); showMessage('JOGADOR ENTROU NA SALA', 1200); },
+    onClosed: reason => { console.warn('[net] sala encerrada:', reason); endOnlineSession(describeNetError(reason)); }
+  };
+}
+
+async function startOnline(role, code = '') {
+  if (netStatus !== 'idle') return;
+  netStatus = 'busy';
+  netError = '';
+  onlinePanel.sync();
+  try {
+    netNetwork ||= createPeerNetwork();
+    const options = { network: netNetwork, player: localProfile() };
+    const room = role === 'host' ? await Room.host(options) : await Room.join({ ...options, code });
+    beginOnlineSession(room);
+  } catch (err) {
+    console.warn('[net]', err);
+    netStatus = 'idle';
+    netError = describeNetError(err?.code);
+  }
+  onlinePanel.sync();
+  pauseMenu.refresh();
+}
+
+function beginOnlineSession(room) {
+  netSession = new NetSession({ room, game: createNetGame() });
+  netStatus = 'connected';
+  dynamicEventSystem.setMirror(netSession.isGuest);
+  // A hidden tab stops requestAnimationFrame: keep pings and poses flowing so the room survives a quick tab switch.
+  netKeepAlive = setInterval(() => { if (document.hidden && netSession?.active) netSession.update(performance.now()); }, 1000);
+  if (netSession.isGuest) {
+    // The guest's own city state is replaced by the host's: start from a clean mirror.
+    bossMirror.clear();
+    mirroredBoss = null;
+    resetGame({ fromNet: true });
+  } else {
+    rescaleBossForPlayers();
+  }
+  showMessage(netSession.isHost ? `SALA ${room.code} CRIADA` : `NA SALA ${room.code}`, 1800);
+}
+
+function leaveOnline() { endOnlineSession(''); }
+
+function endOnlineSession(message = '') {
+  const wasGuest = !!netSession?.isGuest;
+  clearInterval(netKeepAlive);
+  if (netSession?.active) netSession.leave();
+  netSession = null;
+  netStatus = 'idle';
+  netError = message;
+  dynamicEventSystem.setMirror(false);
+  remoteHeroes.clear();
+  bossMirror.clear();
+  mirroredBoss = null;
+  rescaleBossForPlayers();                       // back to the solo health scale
+  if (wasGuest) resetGame();                     // the guest world was a mirror: start a clean solo mission
+  if (message) showMessage(message, 2400);
+  onlinePanel.sync();
+  pauseMenu.refresh();
+}
+
+function netTick() {
+  const now = performance.now();
+  const dt = lastNetFrame ? Math.min(.05, (now - lastNetFrame) / 1000) : 0;
+  lastNetFrame = now;
+  netSession.update(now);
+  if (!netSession?.active) return;               // update() may have closed the room
+  remoteHeroes.setHidden(spaceState.active || reentryState.active);
+  remoteHeroes.update(dt, netSession.remotes(now));
+  if (netSession.isGuest) updateBossMirror(dt);
+}
+
+addEventListener('pagehide', () => netSession?.leave());
+
+const onlinePanel = createOnlinePanel({
+  getState: () => ({
+    status: netStatus, code: netSession?.code || '', isHost: !!netSession?.isHost, error: netError,
+    players: (netSession?.players || []).map(p => ({ ...p, self: p.id === netSession.selfId, isHost: p.id === 'p0' }))
+  }),
+  getName: playerName,
+  setName: savePlayerName,
+  onCreate: () => startOnline('host'),
+  onJoin: code => startOnline('guest', code),
+  onLeave: leaveOnline
+});
 // --- pause ---
 const pauseMenu = createPauseMenu({
   characters: CHARACTERS,
@@ -5205,6 +5626,7 @@ const pauseMenu = createPauseMenu({
   onSelectCharacter: id => selectCharacter(id),
   getSkinIds: () => skinIds,
   onSelectSkin: (characterId, skinId) => selectSkin(characterId, skinId),
+  onlinePanel,
   schema: SCHEMA,
   getSettings: () => settings,
   onChange: changeSetting,
@@ -5228,6 +5650,7 @@ const pauseMenu = createPauseMenu({
     ['Velocidade', `${Math.round(velocity.length() * 3.6)} km/h`],
     ['Altitude', `${Math.round(hero.position.y)} m`],
     ['Incêndios ativos', String(fireSystem.getActiveSpots().length)],
+    ...(netSession ? [['Sala online', `${netSession.code} · ${netSession.playerCount} jogador(es)`]] : []),
     ['Modo offline', window.__pwa?.label ?? 'indisponível']
   ],
   controlsSource: () => activeCharacterId === 'flash'
@@ -5283,12 +5706,14 @@ function animate(timestamp) {
   timer.update(timestamp);
   updateFps(frameMs);
   if (paused) {
+    if (netSession) netTick();
     // World frozen; keep drawing so graphics changes are visible behind the menu.
     pauseMenu.tick();
     postFx.render();
     requestAnimationFrame(animate);
     return;
   }
+  if (netSession) netTick();
   // Never step backwards: a negative delta would destabilise every damped lerp.
   const dt = THREE.MathUtils.clamp(timer.getDelta(), 0, .033);
   const time = timer.getElapsed();
@@ -5306,7 +5731,7 @@ function animate(timestamp) {
   updateDodge(dt);
   if (flashOn) flash.update(dt, time);
   else { updateBufferedAttack(dt); updateHero(dt,time); }
-  updateEnemy(worldDt * chillScale,time);
+  if (netSession?.isGuest) { /* mirrored in netTick */ } else updateEnemy(worldDt * chillScale,time);
   updateCityLife(worldDt,time);
   updatePlayerRegen(dt);
   updateHeroReactions(dt);
@@ -5458,7 +5883,7 @@ function triggerLeapAttackImpact() {
 if (new URLSearchParams(location.search).has('debug')) {
   window.__sky = {
     THREE, hero, heroVisual, enemyRoot, camera, keys, velocity, timer, renderer, scene, postFx, bursts, skyDome, adaptiveResolution, applyPixelRatio, IS_TOUCH, PROFILE, lookBy, pauseMenu, openPause, resumeGame, changeSetting, selectCharacter, layoutRings, rings, dodge, dynamicEventSystem, tryInterceptActiveMeteor, applyIceBreathDamage,
-    get flash() { return flash; }, get flashFx() { return flashFx; }, get reverseFx() { return reverseFx; }, get activeCharacterId() { return activeCharacterId; },
+    get flash() { return flash; }, get netSession() { return netSession; }, get remoteHeroes() { return remoteHeroes; }, netTick: () => netTick(), get flashFx() { return flashFx; }, get reverseFx() { return reverseFx; }, get activeCharacterId() { return activeCharacterId; },
     get settings() { return settings; }, get paused() { return paused; }, get gameMap() { return gameMap; }, buildMapState,
     get mixer() { return mixer; },
     get enemyMixer() { return enemyMixer; },

@@ -163,3 +163,13 @@ Para adicionar outra skin, inclua-a em `skins` no `game/characters/registry.js`,
 - **three.js local:** o jogo não depende mais de CDN — as bibliotecas ficam em `vendor/three/` (`npm run vendor` as baixa de novo).
 - **Atualizações:** arquivos de código usam rede primeiro (edições aparecem na hora, com o cache como reserva). Ao **adicionar ou remover arquivos** ou trocar um modelo `.glb`, rode `npm run pwa` (um teste avisa se esquecer). Só os modelos alterados são baixados de novo.
 - Ícones: `python tools/make-icons.py`. `?nosw` desliga e limpa o service worker.
+
+### Co-op online
+
+Abra **Pausa → Online** (tecla `P`). Um jogador escolhe **Criar sala** e passa o código de 4 caracteres; os outros digitam o código e clicam em **Entrar** (até 4 jogadores). Todos enfrentam o mesmo Jason, os mesmos meteoros e os mesmos incêndios, cada um com o herói e a skin que escolheu. A vida do Jason sobe 50% por jogador extra.
+
+- O **anfitrião** simula o Jason, os meteoros e o fogo; os convidados espelham esse estado. Cada jogador comanda o próprio herói.
+- Morrer só faz **você** renascer; só o anfitrião reinicia a missão (`R` do convidado = renascer).
+- A conexão é direta entre os navegadores (WebRTC via PeerJS, `vendor/peerjs/`, instalado com `npm run vendor:peerjs`). Se o anfitrião sair, a sala termina.
+- Limites da v1: só STUN (algumas redes — CGNAT, certas 4G e redes corporativas — não conectam); se o anfitrião pausar, o mundo compartilhado congela para todos; raios, vibração e laser dos outros heróis e o telégrafo de ataque do Jason não são espelhados.
+- Publicação: `.github/workflows/pages.yml` roda os testes, `npm run pwa` e `npm run site` (monta `_site/`) e publica no **GitHub Pages**. Ative em *Settings → Pages → Source: GitHub Actions* (em plano gratuito o repositório precisa ser público).

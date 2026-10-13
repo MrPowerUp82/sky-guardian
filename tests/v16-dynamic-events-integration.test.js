@@ -65,13 +65,13 @@ test('scheduler é atualizado uma vez por frame e pausa em espaço/reentrada', (
   assert.match(main,/function\s+updateDynamicEvents\s*\(/);
   assert.match(main,/spaceState\.active/);
   assert.match(main,/reentryState\.active/);
-  const animate=main.match(/function\s+animate\s*\(timestamp\)\s*\{[\s\S]*?requestAnimationFrame\(animate\);\n\}/)?.[0] || '';
+  const animate=main.match(/function\s+animate\s*\(timestamp\)\s*\{[\s\S]*?requestAnimationFrame\(animate\);\r?\n\}/)?.[0] || '';
   assert.equal((animate.match(/updateDynamicEvents\s*\(/g)||[]).length,1);
 });
 
 test('reset limpa eventos, fogo, Ice Breath e apresentação', () => {
   const main=read('main.js');
-  const reset=main.match(/function\s+resetGame\s*\(\)\s*\{[\s\S]*?\n\}/)?.[0] || '';
+  const reset=main.match(/function\s+resetGame\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(reset,/iceBreathController\.reset\s*\(/);
   assert.match(reset,/dynamicEventSystem\.reset\s*\(/);
   assert.match(reset,/fireSystem\.reset\s*\(/);

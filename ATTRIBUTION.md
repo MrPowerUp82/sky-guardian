@@ -57,3 +57,11 @@ Arquivo usado sem alterações em `assets/flash/reverse-flash.glb` (mesmo rig Mi
 **License:** CC BY (conforme exibido pelo upload no Sketchfab)
 
 O ZIP fornecido pelo usuário traz a variante S11 da malha (traje escuro com armadura). `tools/build-skin-glb.mjs` gerou `assets/superman/Superman-armor.glb`: mantém malha, texturas e rig e os mesmos 29 clips da skin clássica (os 6 sub-clips do laser foram cortados com `tools/bake-subclips.mjs`). Os direitos do personagem Superman / DC / MultiVersus não são cedidos pela licença do upload.
+
+---
+
+## PeerJS (co-op online)
+
+**Biblioteca:** PeerJS (WebRTC) — https://peerjs.com  
+**Licença:** MIT (`vendor/peerjs/LICENSE`)  
+**Uso:** embarcado em `vendor/peerjs/` (versão em `vendor/peerjs/VERSION`) para o modo co-op online; o broker público do PeerJS só intermedeia o aperto de mão entre os navegadores.

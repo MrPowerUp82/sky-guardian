@@ -73,6 +73,33 @@ export class FireSystem {
   countByEvent(eventId) { return this.getActiveSpots().filter(s => s.eventId === eventId).length; }
   remainingCapacity() { return Math.max(0, this.tuning.maxSpots - this.getActiveSpots().length); }
 
+  // Online host: a sliver of fire (rounded to 0 in snapshots) must not stay alive where no guest can
+  // see it, or its event would never resolve. Call before taking a snapshot.
+  settle(threshold = 0.02) {
+    for (const spot of this.getActiveSpots()) {
+      if (spot.intensity < threshold) { spot.intensity = 0; spot.state = 'extinguished'; spot.coolingTimer = 0; }
+    }
+  }
+
+  // Active spots as [id, intensity]: what the online host broadcasts.
+  getSnapshot() {
+    return this.getActiveSpots().map(s => [s.id, Math.round(s.intensity * 100) / 100]);
+  }
+
+  // Online guest: follow the host. Spots the host no longer lists are out; intensity
+  // only ever goes down (a local cooling that is ahead of the host stays ahead).
+  syncFromSnapshot(list = []) {
+    const host = new Map(list.map(([id, value]) => [String(id), clamp01(value)]));
+    for (const spot of this.getActiveSpots()) {
+      const value = host.get(spot.id);
+      if (value === undefined || value <= 1e-6) {
+        spot.intensity = 0; spot.state = 'extinguished'; spot.coolingTimer = 0;
+      } else if (value < spot.intensity) {
+        spot.intensity = value; spot.state = 'cooling'; spot.coolingTimer = this.tuning.coolingStateSeconds;
+      }
+    }
+  }
+
   querySphere(position, radius) {
     const p = cloneVec(position);
     const r = Math.max(0, Number(radius)||0);
