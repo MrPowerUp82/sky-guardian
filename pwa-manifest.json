@@ -1,5 +1,5 @@
 {
-  "version": "d01dda7609",
+  "version": "55d78c8fd8",
   "core": [
     "./",
     "./index.html",
@@ -83,8 +83,8 @@
   "assets": [
     {
       "url": "./assets/flash/reverse-flash.glb",
-      "hash": "eba116abfdf05c4f",
-      "size": 2595204
+      "hash": "3758dbb650f7a0ca",
+      "size": 2445876
     },
     {
       "url": "./assets/flash/the-flash.glb",
@@ -93,8 +93,8 @@
     },
     {
       "url": "./assets/jason/Jason-game.glb",
-      "hash": "11e75b39f2dad913",
-      "size": 11523276
+      "hash": "72848b6e27e7f420",
+      "size": 9991560
     },
     {
       "url": "./assets/kenney/car-kit/ambulance.glb",
@@ -538,14 +538,14 @@
     },
     {
       "url": "./assets/superman/Superman-armor.glb",
-      "hash": "0058f6b6f705b548",
-      "size": 12523332
+      "hash": "d1f83b57a74c78b8",
+      "size": 11124080
     },
     {
       "url": "./assets/superman/Superman-game.glb",
-      "hash": "2cc51c4ba127cb7a",
-      "size": 14828844
+      "hash": "54dcf47514bfe166",
+      "size": 12643504
     }
   ],
-  "assetBytes": 54609124
+  "assetBytes": 49343488
 }

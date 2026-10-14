@@ -162,6 +162,7 @@ Para adicionar outra skin, inclua-a em `skins` no `game/characters/registry.js`,
 - **Offline:** na primeira visita online o jogo baixa os 91 modelos (~38 MB) em segundo plano; a tela inicial e o menu de pausa (aba Jogo) mostram o progresso e "pronto para jogar offline ✓". Depois disso funciona sem internet (aparece o selo OFFLINE quando a conexão cai).
 - **three.js local:** o jogo não depende mais de CDN — as bibliotecas ficam em `vendor/three/` (`npm run vendor` as baixa de novo).
 - **Atualizações:** arquivos de código usam rede primeiro (edições aparecem na hora, com o cache como reserva). Ao **adicionar ou remover arquivos** ou trocar um modelo `.glb`, rode `npm run pwa` (um teste avisa se esquecer). Só os modelos alterados são baixados de novo.
+- Texturas: os GLBs dos personagens usam WebP lossless (`EXT_texture_webp`, pixels idênticos aos PNGs originais). Para converter outro modelo: `npm i --no-save sharp && node tools/webp-textures.mjs modelo.glb`, depois `npm run pwa`.
 - Ícones: `python tools/make-icons.py`. `?nosw` desliga e limpa o service worker.
 
 ### Co-op online
